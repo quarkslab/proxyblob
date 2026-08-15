@@ -57,13 +57,53 @@ type Config struct {
 }
 
 // ListenerState tracks the state of a listener.
+//
+// Two goroutines can decide to shut a listener down: the CLI, via StopListener,
+// and the accept loop, when Accept has failed too many times in a row. running
+// is the gate that makes exactly one of them the owner of the teardown.
 type ListenerState struct {
-	Config     *ListenerConfig    // listener configuration
-	Listener   *aznet.Listener    // aznet listener
-	ListenAddr string             // address where listener is bound
-	Running    bool               // whether listener is running
-	StartedAt  time.Time          // when listener was started
-	CancelFunc context.CancelFunc // function to cancel the accept loop context
+	Config     *ListenerConfig // listener configuration
+	ListenAddr string          // address where listener is bound
+	StartedAt  time.Time       // when listener was started
+
+	running atomic.Bool // whether listener is running
+
+	mu       sync.Mutex         // guards listener and cancel
+	listener *aznet.Listener    // aznet listener, nil once torn down
+	cancel   context.CancelFunc // cancels the accept loop context, nil once torn down
+}
+
+// IsRunning reports whether the listener is accepting connections.
+func (s *ListenerState) IsRunning() bool {
+	return s.running.Load()
+}
+
+// claimStop returns true for the single caller that wins the right to tear this
+// listener down; every later caller gets false and must not touch it.
+func (s *ListenerState) claimStop() bool {
+	return s.running.CompareAndSwap(true, false)
+}
+
+// transport returns the live listener, or nil once it has been torn down.
+func (s *ListenerState) transport() *aznet.Listener {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listener
+}
+
+// closeTransport cancels the accept context and closes the listener. Idempotent.
+func (s *ListenerState) closeTransport() {
+	s.mu.Lock()
+	cancel, listener := s.cancel, s.listener
+	s.cancel, s.listener = nil, nil
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if listener != nil {
+		listener.Close()
+	}
 }
 
 // AgentConnection tracks a connected agent.
@@ -200,7 +240,7 @@ func StartListener(listenerID string) error {
 	// Check if listener already exists
 	if val, ok := listeners.Load(listenerID); ok {
 		state := val.(*ListenerState)
-		if state.Running {
+		if state.IsRunning() {
 			return fmt.Errorf("listener '%s' is already running", listenerID)
 		}
 	}
@@ -257,12 +297,12 @@ func StartListener(listenerID string) error {
 	// Store listener state
 	state := &ListenerState{
 		Config:     listenerConfig,
-		Listener:   listener,
 		ListenAddr: listenAddr,
-		Running:    true,
 		StartedAt:  time.Now(),
-		CancelFunc: cancel,
+		listener:   listener,
+		cancel:     cancel,
 	}
+	state.running.Store(true)
 	listeners.Store(listenerID, state)
 
 	// Set this listener as the default when started
@@ -284,7 +324,7 @@ func StopListener(listenerID string) error {
 	}
 
 	state := val.(*ListenerState)
-	if !state.Running {
+	if !state.IsRunning() {
 		return fmt.Errorf("listener '%s' is not running", listenerID)
 	}
 
@@ -308,20 +348,16 @@ func StopListener(listenerID string) error {
 	// This gives agents time to receive the shutdown notification
 	time.Sleep(200 * time.Millisecond)
 
-	// Now cancel the accept loop context
-	if state.CancelFunc != nil {
-		state.CancelFunc()
+	// Claim the teardown only now. Claiming before the FIN window would report the
+	// listener as stopped while it is still up, letting a restart bind a new
+	// listener under this ID whose agents this teardown would then disconnect.
+	if !state.claimStop() {
+		return fmt.Errorf("listener '%s' is not running", listenerID)
 	}
 
-	// Close the listener after FIN messages have been sent
-	if state.Listener != nil {
-		state.Listener.Close()
-	}
-
-	// Update state
-	state.Running = false
-	state.Listener = nil
-	state.CancelFunc = nil
+	// Close the transport after FIN messages have been sent, then drop the agents
+	// that came in through it.
+	dropped := teardownListener(listenerID, state, "listener stopped")
 
 	// Clear default selection if this was the selected listener
 	if selectedListener == listenerID {
@@ -329,41 +365,53 @@ func StopListener(listenerID string) error {
 		log.Info().Msg("Default listener cleared (listener was stopped)")
 	}
 
-	// Now fully close all connections and clean up
-	connectedAgents.Range(func(key, value interface{}) bool {
-		agent := value.(*AgentConnection)
-		if agent.ListenerID == listenerID {
-			agentID := key.(string)
-
-			// Stop proxy if running
-			if val, ok := runningProxies.LoadAndDelete(agentID); ok {
-				if server, ok := val.(*proxy.ProxyServer); ok {
-					server.Stop()
-				}
+	// Selection is CLI-owned state, so it is cleared here rather than in
+	// teardownListener, which also runs on the accept goroutine.
+	for _, agentID := range dropped {
+		if selectedAgent == agentID {
+			selectedAgent = ""
+			// Update prompt to default if app is available
+			if app != nil {
+				app.SetPrompt("proxyblob » ")
 			}
-
-			// Close connection (this will also send FIN if not already sent)
-			agent.Conn.Close()
-
-			// Remove from map
-			connectedAgents.Delete(key)
-
-			// Clear selected agent if it was this one
-			if selectedAgent == agentID {
-				selectedAgent = ""
-				// Update prompt to default if app is available
-				if app != nil {
-					app.SetPrompt("proxyblob » ")
-				}
-			}
-
-			log.Info().Str("agent_id", agentID).Str("listener_id", listenerID).Msg("Agent disconnected (listener stopped)")
 		}
-		return true
-	})
+	}
 
 	log.Info().Str("listener_id", listenerID).Msg("Listener stopped")
 	return nil
+}
+
+// teardownListener closes the listener's transport and disconnects every agent
+// that arrived through it, returning their IDs. The caller must have won
+// claimStop first, which is what keeps this to one execution per listener.
+func teardownListener(listenerID string, state *ListenerState, reason string) []string {
+	state.closeTransport()
+
+	var dropped []string
+	connectedAgents.Range(func(key, value interface{}) bool {
+		agent := value.(*AgentConnection)
+		if agent.ListenerID != listenerID {
+			return true
+		}
+		agentID := key.(string)
+
+		// Stop proxy if running
+		if val, ok := runningProxies.LoadAndDelete(agentID); ok {
+			if server, ok := val.(*proxy.ProxyServer); ok {
+				server.Stop()
+			}
+		}
+
+		// Close connection (this will also send FIN if not already sent)
+		agent.Conn.Close()
+		connectedAgents.Delete(key)
+		dropped = append(dropped, agentID)
+
+		log.Info().Str("agent_id", agentID).Str("listener_id", listenerID).Str("reason", reason).Msg("Agent disconnected")
+		return true
+	})
+
+	return dropped
 }
 
 // GenerateConnectionString creates a connection string for agents using the specified listener.
@@ -374,13 +422,14 @@ func GenerateConnectionString(listenerID string, expiry time.Duration) (string, 
 	}
 
 	state := val.(*ListenerState)
-	if !state.Running || state.Listener == nil {
+	listener := state.transport()
+	if !state.IsRunning() || listener == nil {
 		return "", fmt.Errorf("listener '%s' is not running", listenerID)
 	}
 
 	// The expiry parameter is currently ignored by the library's ConnectionString method.
 	// It uses the DefaultSASExpiry (24h) or the one set via WithSASExpiry during Listen.
-	connStr, err := state.Listener.ConnectionString()
+	connStr, err := listener.ConnectionString()
 	if err != nil {
 		return "", err
 	}
@@ -395,6 +444,17 @@ func GenerateConnectionString(listenerID string, expiry time.Duration) (string, 
 
 // AcceptAgentLoopForListener accepts incoming agent connections for a specific listener and stores them.
 func AcceptAgentLoopForListener(ctx context.Context, listenerID string, listener net.Listener) {
+	// An Accept failure is usually transient -- a throttled poll, a dropped
+	// request -- so back off and retry. But retrying forever turns a listener
+	// whose transport is gone into a zombie: it logs on every iteration while
+	// `listener list` still reports it as running and no agent can ever arrive.
+	// Give up after a bounded run of failures and tear it down instead.
+	const maxAcceptFailures = 20
+	const maxAcceptBackoff = 5 * time.Second
+	const maxAcceptBackoffShift = 6
+
+	failures := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -413,12 +473,44 @@ func AcceptAgentLoopForListener(ctx context.Context, listenerID string, listener
 				return
 			}
 			state := val.(*ListenerState)
-			if !state.Running {
+			if !state.IsRunning() {
 				return
 			}
+
+			failures++
+			if failures >= maxAcceptFailures {
+				log.Error().
+					Err(err).
+					Int("consecutive", failures).
+					Str("listener_id", listenerID).
+					Msg("Accept failing persistently, stopping listener")
+				// Lost the race against a concurrent CLI stop: that caller owns
+				// the teardown, so just exit.
+				if state.claimStop() {
+					teardownListener(listenerID, state, "accept loop gave up")
+				}
+				return
+			}
+
 			log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to accept connection")
+
+			shift := failures - 1
+			if shift > maxAcceptBackoffShift {
+				shift = maxAcceptBackoffShift
+			}
+			backoff := time.Duration(100<<uint(shift)) * time.Millisecond
+			if backoff > maxAcceptBackoff {
+				backoff = maxAcceptBackoff
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
 			continue
 		}
+
+		failures = 0
 
 		// Generate a unique ID for this agent connection
 		agentID := uuid.New().String()
@@ -538,7 +630,7 @@ func ListListeners() []ListenerInfo {
 		// Check if listener is running
 		if val, ok := listeners.Load(listenerID); ok {
 			state := val.(*ListenerState)
-			if state.Running {
+			if state.IsRunning() {
 				info.Status = "running"
 				info.StartedAt = state.StartedAt
 				info.Protocol = state.Config.Driver
@@ -832,7 +924,7 @@ func AddCommands(app *grumble.App) {
 			}
 
 			state := val.(*ListenerState)
-			if !state.Running {
+			if !state.IsRunning() {
 				log.Error().Str("listener_id", listenerID).Msg("Listener is not running")
 				return nil
 			}
