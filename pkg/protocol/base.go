@@ -119,7 +119,9 @@ func (h *BaseHandler) ReceiveLoop() {
 	// records back to back, or a whole record plus the head of the next one.
 	// The accumulator below therefore lives OUTSIDE the read loop so that a
 	// record straddling two Read calls is reassembled rather than discarded.
-	buffer := make([]byte, 16*1024*1024)
+	// The read size only bounds how many iterations a large payload takes, never
+	// how it is framed, so it costs nothing to keep it small.
+	buffer := make([]byte, 64*1024)
 	acc := make([]byte, 0, HeaderSize+MaxPacketDataSize)
 
 	for {
