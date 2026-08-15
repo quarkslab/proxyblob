@@ -20,12 +20,8 @@ github.com/apache/arrow-go/v18 v18.7.0 h1:Vw/i+cJyebUofT7JlqFpe65LrmwxULn166jjwS
 github.com/apache/arrow-go/v18 v18.7.0/go.mod h1:PM6IigLJkdMwIpeHXnymo+xZ52f42a9EYiLtRel4p/A=
 github.com/apache/thrift v0.24.0 h1:zy31L1a49QTNB2bG1BBfMXol3yJrTH975G3pPubQVLQ=
 github.com/apache/thrift v0.24.0/go.mod h1:zPt6WxgvTOM6hF92y8C+MkEM5LMxZuk4JcQOiU4Esvs=
-github.com/atsika/aznet v0.0.0-20260319000323-1bb45b486a9e h1:a78RRI3y1Gsa1rYJztcPPDvS3Fn95Ty6QTl9y2OPmQk=
-github.com/atsika/aznet v0.0.0-20260319000323-1bb45b486a9e/go.mod h1:0+F6U1Bi8CrghJ51eAY1J7B9pCG5FCJc930Dm1Jqh1I=
-github.com/atsika/aznet v0.0.0-20260811113231-fb862c589562 h1:el36KBcmkViqxJOtFU7eipTTPjIO4o1Pogh3BVarNjw=
-github.com/atsika/aznet v0.0.0-20260811113231-fb862c589562/go.mod h1:LmC2jYFlrHSKpzO15C054lzMPJCpwM1CQN+ObC3a8C4=
-github.com/atsika/aznet v0.0.0-20260815130844-c8aef911586e h1:UKWwcGDPvwyBT0qjZUrYUiA/3clCfQbuUIh7hsZv+Wk=
-github.com/atsika/aznet v0.0.0-20260815130844-c8aef911586e/go.mod h1:LmC2jYFlrHSKpzO15C054lzMPJCpwM1CQN+ObC3a8C4=
+github.com/atsika/aznet v0.0.0-20260815163055-f666cee79b07 h1:lHwvL3R9w1DU/6W37r/BnJbkRMY7A3f5NvNFTJhhRck=
+github.com/atsika/aznet v0.0.0-20260815163055-f666cee79b07/go.mod h1:LmC2jYFlrHSKpzO15C054lzMPJCpwM1CQN+ObC3a8C4=
 github.com/chzyer/logex v1.1.10 h1:Swpa1K6QvQznwJRcfTfQJmTE72DqScAa40E+fbHEXEE=
 github.com/chzyer/logex v1.1.10/go.mod h1:+Ywpsq7O8HXn0nuIou7OrIPyXbp3wmkHB+jjWRnGsAI=
 github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1 h1:q763qf9huN11kDQavWsoZXJNW3xEE4JJyHa5Q25/sd8=
