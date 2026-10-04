@@ -56,16 +56,6 @@ type Config struct {
 	Listeners []ListenerConfig `json:"listeners"` // array of listener configurations
 }
 
-// ListenerState tracks the state of a listener.
-type ListenerState struct {
-	Config     *ListenerConfig    // listener configuration
-	Listener   *aznet.Listener    // aznet listener
-	ListenAddr string             // address where listener is bound
-	Running    bool               // whether listener is running
-	StartedAt  time.Time          // when listener was started
-	CancelFunc context.CancelFunc // function to cancel the accept loop context
-}
-
 // AgentConnection tracks a connected agent.
 type AgentConnection struct {
 	ID         string   // connection ID
@@ -79,7 +69,13 @@ type AgentConnection struct {
 	// avoid a torn read of a multi-word time.Time. Use lastSeen()/setLastSeen.
 	LastSeen atomic.Int64
 
-	CreatedAt time.Time // connection time
+	CreatedAt  time.Time // connection time
+	generation *ListenerState
+	mu         sync.Mutex
+	closed     bool
+	closeOnce  sync.Once
+	closeErr   error
+	server     *proxy.ProxyServer
 }
 
 // lastSeen returns the last-seen time, or the zero time if never set.
@@ -197,10 +193,12 @@ func (lc *ListenerConfig) Validate() error {
 
 // StartListener creates and starts an aznet listener for the given listener config.
 func StartListener(listenerID string) error {
+	listenerStartMu.Lock()
+	defer listenerStartMu.Unlock()
 	// Check if listener already exists
 	if val, ok := listeners.Load(listenerID); ok {
 		state := val.(*ListenerState)
-		if state.Running {
+		if state.status() != stopped {
 			return fmt.Errorf("listener '%s' is already running", listenerID)
 		}
 	}
@@ -237,17 +235,18 @@ func StartListener(listenerID string) error {
 	}
 	listenAddr := listenURL.String()
 
-	log.Debug().Str("listener_id", listenerID).Str("listen_addr", listenAddr).Msg("Starting aznet listener")
+	log.Debug().Str("listener_id", listenerID).Msg("Starting aznet listener")
 
-	// Use ultra-aggressive polling (1ms) - this will increase Azure API costs!
+	// Keep aznet polling defaults; retry policy here applies only to failures.
 	ctx, cancel := context.WithCancel(context.Background())
-	l, err := aznet.Listen(listenerConfig.Driver, listenAddr, aznet.WithContext(ctx))
+	handshake, token := bootstrapEndpoints(listenerID)
+	l, err := listenAzure(listenerConfig.Driver, listenAddr, aznet.WithContext(ctx), aznet.WithEndpoints(handshake, token))
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to start aznet listener: %v", err)
 	}
 
-	listener, ok := l.(*aznet.Listener)
+	listener, ok := l.(bootstrapListener)
 	if !ok {
 		cancel()
 		l.Close()
@@ -257,113 +256,31 @@ func StartListener(listenerID string) error {
 	// Store listener state
 	state := &ListenerState{
 		Config:     listenerConfig,
-		Listener:   listener,
 		ListenAddr: listenAddr,
-		Running:    true,
 		StartedAt:  time.Now(),
-		CancelFunc: cancel,
+		listener:   listener,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		acceptDone: make(chan struct{}),
 	}
+	state.phase = running
 	listeners.Store(listenerID, state)
 
-	// Set this listener as the default when started
-	selectedListener = listenerID
-
-	log.Info().Str("listener_id", listenerID).Str("driver", listenerConfig.Driver).Str("addr", listenerConfig.Address).Msg("Aznet listener started and set as default")
+	log.Info().Str("listener_id", listenerID).Str("driver", listenerConfig.Driver).Str("addr", listenerConfig.Address).Msg("Aznet listener started")
 
 	// Start accepting agent connections for this listener
-	go AcceptAgentLoopForListener(ctx, listenerID, listener)
+	go AcceptAgentLoopForListener(ctx, listenerID, state)
 
 	return nil
 }
 
-// StopListener stops an aznet listener.
+// StopListener waits for the captured generation's teardown, including acceptance.
 func StopListener(listenerID string) error {
 	val, ok := listeners.Load(listenerID)
 	if !ok {
 		return fmt.Errorf("listener '%s' not found", listenerID)
 	}
-
-	state := val.(*ListenerState)
-	if !state.Running {
-		return fmt.Errorf("listener '%s' is not running", listenerID)
-	}
-
-	// First, send FIN messages to all agents while listener is still open
-	// This allows agents to gracefully receive the shutdown notification
-	connectedAgents.Range(func(key, value interface{}) bool {
-		agent := value.(*AgentConnection)
-		if agent.ListenerID == listenerID {
-			// Try to send FIN message using CloseWrite if supported
-			// This allows agents to gracefully handle the shutdown
-			if closeWriter, ok := agent.Conn.(interface {
-				CloseWrite() error
-			}); ok {
-				_ = closeWriter.CloseWrite()
-			}
-		}
-		return true
-	})
-
-	// Wait for FIN messages to be sent and propagate through Azure storage
-	// This gives agents time to receive the shutdown notification
-	time.Sleep(200 * time.Millisecond)
-
-	// Now cancel the accept loop context
-	if state.CancelFunc != nil {
-		state.CancelFunc()
-	}
-
-	// Close the listener after FIN messages have been sent
-	if state.Listener != nil {
-		state.Listener.Close()
-	}
-
-	// Update state
-	state.Running = false
-	state.Listener = nil
-	state.CancelFunc = nil
-
-	// Clear default selection if this was the selected listener
-	if selectedListener == listenerID {
-		selectedListener = ""
-		log.Info().Msg("Default listener cleared (listener was stopped)")
-	}
-
-	// Now fully close all connections and clean up
-	connectedAgents.Range(func(key, value interface{}) bool {
-		agent := value.(*AgentConnection)
-		if agent.ListenerID == listenerID {
-			agentID := key.(string)
-
-			// Stop proxy if running
-			if val, ok := runningProxies.LoadAndDelete(agentID); ok {
-				if server, ok := val.(*proxy.ProxyServer); ok {
-					server.Stop()
-				}
-			}
-
-			// Close connection (this will also send FIN if not already sent)
-			agent.Conn.Close()
-
-			// Remove from map
-			connectedAgents.Delete(key)
-
-			// Clear selected agent if it was this one
-			if selectedAgent == agentID {
-				selectedAgent = ""
-				// Update prompt to default if app is available
-				if app != nil {
-					app.SetPrompt("proxyblob » ")
-				}
-			}
-
-			log.Info().Str("agent_id", agentID).Str("listener_id", listenerID).Msg("Agent disconnected (listener stopped)")
-		}
-		return true
-	})
-
-	log.Info().Str("listener_id", listenerID).Msg("Listener stopped")
-	return nil
+	return val.(*ListenerState).stop()
 }
 
 // GenerateConnectionString creates a connection string for agents using the specified listener.
@@ -374,16 +291,30 @@ func GenerateConnectionString(listenerID string, expiry time.Duration) (string, 
 	}
 
 	state := val.(*ListenerState)
-	if !state.Running || state.Listener == nil {
+	listener := state.transport()
+	if !state.IsRunning() || listener == nil {
 		return "", fmt.Errorf("listener '%s' is not running", listenerID)
 	}
 
 	// The expiry parameter is currently ignored by the library's ConnectionString method.
 	// It uses the DefaultSASExpiry (24h) or the one set via WithSASExpiry during Listen.
-	connStr, err := state.Listener.ConnectionString()
+	connStr, err := listener.ConnectionString()
 	if err != nil {
 		return "", err
 	}
+
+	// Carry the configured namespace to Dial; aznet does not infer endpoint
+	// names from the credential query keys.
+	u, err := url.Parse(connStr)
+	if err != nil {
+		return "", err
+	}
+	handshake, token := bootstrapEndpoints(listenerID)
+	q := u.Query()
+	q.Set("proxyblob-handshake", handshake)
+	q.Set("proxyblob-token", token)
+	u.RawQuery = q.Encode()
+	connStr = u.String()
 
 	// Prepend the driver name so the agent knows which network to use for aznet.Dial
 	// Format: driver|connection_string
@@ -393,75 +324,63 @@ func GenerateConnectionString(listenerID string, expiry time.Duration) (string, 
 	return base64.RawStdEncoding.EncodeToString([]byte(fullConnStr)), nil
 }
 
-// AcceptAgentLoopForListener accepts incoming agent connections for a specific listener and stores them.
-func AcceptAgentLoopForListener(ctx context.Context, listenerID string, listener net.Listener) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+// AcceptAgentLoopForListener owns acceptance for exactly one generation.
+func AcceptAgentLoopForListener(ctx context.Context, listenerID string, state *ListenerState) {
+	acceptAgentLoop(ctx, listenerID, state, waitAcceptRetry)
+}
 
-		conn, err := listener.Accept()
+func acceptAgentLoop(ctx context.Context, listenerID string, state *ListenerState, wait func(context.Context, time.Duration) bool) {
+	defer close(state.acceptDone)
+	failures := 0
+	for ctx.Err() == nil && state.IsRunning() {
+		conn, err := state.listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || !state.IsRunning() {
 				return
 			}
-			// Check if listener was stopped
-			val, ok := listeners.Load(listenerID)
-			if !ok {
+			failures++
+			if !retryAccept(err) || failures >= 20 {
+				log.Error().Err(err).Str("listener_id", listenerID).Msg("Accept failed, stopping listener")
+				state.beginStop() // teardown waits for this loop; never wait here
 				return
 			}
-			state := val.(*ListenerState)
-			if !state.Running {
+			if !wait(ctx, acceptBackoff(failures)) {
 				return
 			}
-			log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to accept connection")
 			continue
 		}
-
-		// Generate a unique ID for this agent connection
-		agentID := uuid.New().String()
-
-		// Read the agent identity (user@host) with a 5-second timeout.
-		//
-		// Wire format: 2-byte big-endian length N (1 <= N <= maxIdentityLen), followed by
-		// exactly N bytes of identity payload. Both reads use io.ReadFull: a bare Read on a
-		// byte stream may return fewer bytes than requested, and any leftover identity bytes
-		// would then be parsed as a record header and desynchronize the stream permanently.
-		//
-		// FLAG DAY: this framing must match the writer in cmd/agent/main.go (NewAgent).
-		// There is no backward compatibility with the old unframed exchange -- agent and
-		// proxy must be rebuilt and deployed together.
-		//
-		// Any failure here is fatal for this connection: we close it and move on rather
-		// than proceeding with an "unknown" identity over a possibly poisoned stream.
-		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		failures = 0
+		if !state.IsRunning() || ctx.Err() != nil {
+			conn.Close()
+			return
+		}
+		// Cancellation closes even a connection still reading its identity.
+		cancelRead := context.AfterFunc(ctx, func() { conn.Close() })
+		conn.SetReadDeadline(time.Now().Add(identityTimeout))
 		info, err := readAgentIdentity(conn)
-		if err != nil {
-			log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to read agent identity, dropping connection")
+		if !cancelRead() || err != nil {
 			conn.Close()
 			continue
 		}
 		conn.SetReadDeadline(time.Time{})
-
-		now := time.Now()
-
-		// Store the connection
-		agent := &AgentConnection{
-			ID:         agentID,
-			Conn:       conn,
-			ListenerID: listenerID,
-			Info:       info,
-			CreatedAt:  now,
+		agent := &AgentConnection{ID: uuid.NewString(), Conn: conn, ListenerID: listenerID,
+			Info: info, CreatedAt: time.Now(), generation: state}
+		agent.setLastSeen(agent.CreatedAt)
+		agent.server = proxy.NewProxyServer(ctx, conn)
+		agent.server.OnReceive = func() { agent.setLastSeen(time.Now()) }
+		// Publication and the stopping transition share the generation lock.
+		state.mu.Lock()
+		if state.phase != running {
+			state.mu.Unlock()
+			agent.close()
+			return
 		}
-		agent.setLastSeen(now)
-		connectedAgents.Store(agentID, agent)
-
-		log.Info().Str("agent_id", agentID).Str("info", info).Str("listener_id", listenerID).Msg("Agent connected")
-
-		// Monitor connection in background
-		go monitorAgent(ctx, agentID, conn)
+		connectedAgents.Store(agent.ID, agent)
+		state.mu.Unlock()
+		// Read the session even before SOCKS starts: this consumes heartbeats and
+		// detects disconnect without a competing reader or an idle-agent timer.
+		agent.server.StartReceiving()
+		go monitorAgent(agent)
 	}
 }
 
@@ -492,24 +411,12 @@ func readAgentIdentity(conn net.Conn) (string, error) {
 	return string(buf), nil
 }
 
-// monitorAgent watches for agent disconnection via proxy server context.
-// Note: We don't read from the connection directly as that interferes with the transport layer.
-func monitorAgent(ctx context.Context, agentID string, conn net.Conn) {
-	// Wait for context cancellation - the proxy server will detect connection issues
-	<-ctx.Done()
-
-	// Clean up on context cancellation
-	connectedAgents.Delete(agentID)
-
-	// Stop proxy if running
-	if val, ok := runningProxies.LoadAndDelete(agentID); ok {
-		if server, ok := val.(*proxy.ProxyServer); ok {
-			server.Stop()
-		}
+// monitorAgent follows the actual session receiver, not listener or CLI activity.
+func monitorAgent(agent *AgentConnection) {
+	<-agent.server.Ctx.Done()
+	if err := agent.close(); err != nil {
+		log.Error().Err(err).Str("agent_id", agent.ID).Msg("Session cleanup failed")
 	}
-
-	conn.Close()
-	log.Info().Str("agent_id", agentID).Msg("Agent disconnected (context done)")
 }
 
 // ListenerInfo tracks listener metadata for display.
@@ -538,7 +445,8 @@ func ListListeners() []ListenerInfo {
 		// Check if listener is running
 		if val, ok := listeners.Load(listenerID); ok {
 			state := val.(*ListenerState)
-			if state.Running {
+			info.Status = state.status().String()
+			if state.IsRunning() {
 				info.Status = "running"
 				info.StartedAt = state.StartedAt
 				info.Protocol = state.Config.Driver
@@ -567,9 +475,10 @@ func ListAgents() []AgentInfo {
 
 		var proxyPort string
 		if val, ok := runningProxies.Load(agentID); ok {
-			if server, ok := val.(*proxy.ProxyServer); ok && server.Listener != nil {
-				_, portStr, _ := net.SplitHostPort(server.Listener.Addr().String())
-				proxyPort = portStr
+			if server, ok := val.(*proxy.ProxyServer); ok {
+				if addr := server.ListenerAddr(); addr != nil {
+					_, proxyPort, _ = net.SplitHostPort(addr.String())
+				}
 			}
 		}
 
@@ -726,6 +635,7 @@ func AddCommands(app *grumble.App) {
 				log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to start listener")
 				return nil
 			}
+			selectedListener = listenerID
 			return nil
 		},
 	})
@@ -832,7 +742,7 @@ func AddCommands(app *grumble.App) {
 			}
 
 			state := val.(*ListenerState)
-			if !state.Running {
+			if !state.IsRunning() {
 				log.Error().Str("listener_id", listenerID).Msg("Listener is not running")
 				return nil
 			}
@@ -927,15 +837,12 @@ func AddCommands(app *grumble.App) {
 			}
 
 			agent := val.(*AgentConnection)
-			ctx := context.Background()
-
-			// Create a proxy server for this agent (direct connection, no transport wrapper)
-			proxyServer := proxy.NewProxyServer(ctx, agent.Conn)
-
-			// Set callback to update LastSeen on every received packet
-			proxyServer.OnReceive = func() {
-				agent.setLastSeen(time.Now())
+			agent.mu.Lock()
+			defer agent.mu.Unlock()
+			if agent.closed {
+				return fmt.Errorf("agent disconnected")
 			}
+			proxyServer := agent.server
 
 			listenAddr := c.Flags.String("listen")
 			host, port, err := net.SplitHostPort(listenAddr)
@@ -950,8 +857,8 @@ func AddCommands(app *grumble.App) {
 				portAvailable := true
 				runningProxies.Range(func(key, value interface{}) bool {
 					server := value.(*proxy.ProxyServer)
-					if server.Listener != nil {
-						_, serverPort, _ := net.SplitHostPort(server.Listener.Addr().String())
+					if addr := server.ListenerAddr(); addr != nil {
+						_, serverPort, _ := net.SplitHostPort(addr.String())
 						if serverPort == port {
 							portAvailable = false
 							return false
@@ -973,14 +880,15 @@ func AddCommands(app *grumble.App) {
 			listenAddr = fmt.Sprintf("%s:%s", host, port)
 			proxyServer.Start(listenAddr)
 
-			if proxyServer.Listener == nil {
+			addr := proxyServer.ListenerAddr()
+			if addr == nil {
 				log.Error().Str("addr", listenAddr).Msg("Failed to start proxy")
 				return nil
 			}
 
 			runningProxies.Store(selectedAgent, proxyServer)
 
-			_, portStr, _ := net.SplitHostPort(proxyServer.Listener.Addr().String())
+			_, portStr, _ := net.SplitHostPort(addr.String())
 			log.Info().Str("agent_id", selectedAgent).Str("port", portStr).Msg("Proxy started")
 
 			return nil
@@ -1006,7 +914,7 @@ func AddCommands(app *grumble.App) {
 
 			// Stop the proxy
 			server := val.(*proxy.ProxyServer)
-			server.Stop()
+			server.StopListening()
 
 			log.Info().Str("agent_id", selectedAgent).Msg("Proxy stopped")
 
@@ -1038,15 +946,9 @@ func AddCommands(app *grumble.App) {
 
 			agent := val.(*AgentConnection)
 
-			// Stop proxy if running
-			if val, ok := runningProxies.LoadAndDelete(agentID); ok {
-				if server, ok := val.(*proxy.ProxyServer); ok {
-					server.Stop()
-				}
+			if err := agent.close(); err != nil {
+				return err
 			}
-
-			// Close the connection
-			agent.Conn.Close()
 
 			if selectedAgent == agentID {
 				selectedAgent = ""

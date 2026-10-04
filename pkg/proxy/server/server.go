@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"proxyblob/pkg/protocol"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,8 +24,11 @@ type ProxyServer struct {
 	// BaseHandler provides common protocol functionality
 	*protocol.BaseHandler
 
-	// Listener accepts incoming TCP connections
-	Listener net.Listener
+	// listener accepts incoming TCP connections; lifecycleMu guards replacement.
+	listener    net.Listener
+	receiveOnce sync.Once
+	lifecycleMu sync.Mutex
+	stopOnce    sync.Once
 }
 
 // NewProxyServer creates a proxy server instance with the given connection.
@@ -38,28 +42,67 @@ func NewProxyServer(ctx context.Context, conn net.Conn) *ProxyServer {
 
 // Start begins listening for client connections on the specified address.
 // It launches background goroutines for accepting connections and processing
-// protocol messages. If listening fails, the server is stopped.
+// protocol messages. A local bind failure leaves the agent session alive.
 func (s *ProxyServer) Start(address string) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.Ctx.Err() != nil || s.listener != nil {
+		return
+	}
 	var err error
-	s.Listener, err = net.Listen("tcp", address)
+	s.listener, err = net.Listen("tcp", address)
 	if err != nil {
 		log.Error().Err(err).Str("addr", address).Msg("Failed to listen on address")
-		s.Stop()
 		return
 	}
 
-	go s.ReceiveLoop()
-	go s.acceptLoop()
+	s.StartReceiving()
+	go s.acceptLoop(s.listener)
 }
+
+// ListenerAddr returns the current local SOCKS address, if started.
+func (s *ProxyServer) ListenerAddr() net.Addr {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
+
+// StopListening stops local SOCKS service while retaining the agent session.
+func (s *ProxyServer) StopListening() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.listener != nil {
+		s.listener.Close()
+		s.listener = nil
+	}
+	// Keep entries until each handler sends its CLOSE after any queued NEW.
+	// Removing here would make SendClose silently skip peer notification.
+	s.Connections.Range(func(_, value any) bool {
+		value.(*protocol.Connection).Close()
+		return true
+	})
+}
+
+// StartReceiving monitors the tunnel independently of the local SOCKS listener.
+// Start may be called later without creating a second reader.
+func (s *ProxyServer) StartReceiving() { s.receiveOnce.Do(func() { go s.ReceiveLoop() }) }
 
 // Stop gracefully terminates the proxy server by closing all active
 // connections, canceling the handler's context, and stopping the listener.
 func (s *ProxyServer) Stop() {
-	s.CloseAllConnections()
-	s.Cancel()
-	if s.Listener != nil {
-		s.Listener.Close()
-	}
+	s.stopOnce.Do(func() {
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		s.CloseAllConnections()
+		s.Cancel()
+		if s.listener != nil {
+			s.listener.Close()
+			s.listener = nil
+		}
+	})
 }
 
 // OnNew handles new connection requests. The server is the only one initiating
@@ -142,16 +185,16 @@ func (s *ProxyServer) cleanupConnection(connID uuid.UUID, clientConn net.Conn, p
 // acceptLoop accepts incoming TCP connections and spawns goroutines to handle
 // each one. It continues until the context is canceled or a non-temporary
 // error occurs.
-func (s *ProxyServer) acceptLoop() {
+func (s *ProxyServer) acceptLoop(listener net.Listener) {
 	for {
 		select {
 		case <-s.Ctx.Done():
 			return
 		default:
-			conn, err := s.Listener.Accept()
+			conn, err := listener.Accept()
 			if err != nil {
-				if s.Ctx.Err() != nil {
-					return // Exit quietly on shutdown
+				if s.Ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+					return // Exit quietly on session or local listener shutdown
 				}
 
 				if _, ok := err.(net.Error); ok {
@@ -160,7 +203,7 @@ func (s *ProxyServer) acceptLoop() {
 				return
 			}
 
-			go s.handleConnection(conn)
+			go s.handleConnection(listener, conn)
 		}
 	}
 }
@@ -185,7 +228,7 @@ const AckTimeout = 120 * time.Second
 //   - Initiating connection with remote agent
 //   - Setting up bidirectional data forwarding
 //   - Managing connection lifecycle and cleanup
-func (s *ProxyServer) handleConnection(clientConn net.Conn) {
+func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Conn) {
 	defer clientConn.Close()
 
 	// Enable TCP_NODELAY to disable Nagle's algorithm for better TLS performance
@@ -195,7 +238,13 @@ func (s *ProxyServer) handleConnection(clientConn net.Conn) {
 
 	connID := uuid.New()
 	proxyConn := protocol.NewConnection(connID, s.Ctx.Done())
+	s.lifecycleMu.Lock()
+	if s.listener != listener || s.Ctx.Err() != nil {
+		s.lifecycleMu.Unlock()
+		return
+	}
 	s.Connections.Store(proxyConn.ID, proxyConn)
+	s.lifecycleMu.Unlock()
 
 	// 1. Initiate connection with the agent
 	errCode := s.SendNewConnection(connID)
@@ -209,6 +258,10 @@ func (s *ProxyServer) handleConnection(clientConn net.Conn) {
 	// on that signal rather than polling for the pointer.
 	select {
 	case <-s.Ctx.Done():
+		s.SendClose(connID, protocol.ErrHandlerStopped)
+		s.Connections.Delete(connID)
+		return
+	case <-proxyConn.Closed:
 		s.SendClose(connID, protocol.ErrHandlerStopped)
 		s.Connections.Delete(connID)
 		return
