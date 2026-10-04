@@ -266,9 +266,6 @@ func StartListener(listenerID string) error {
 	state.phase = running
 	listeners.Store(listenerID, state)
 
-	// Set this listener as the default when started
-	// CLI selection is updated by the command handler.
-
 	log.Info().Str("listener_id", listenerID).Str("driver", listenerConfig.Driver).Str("addr", listenerConfig.Address).Msg("Aznet listener started")
 
 	// Start accepting agent connections for this listener
@@ -478,9 +475,10 @@ func ListAgents() []AgentInfo {
 
 		var proxyPort string
 		if val, ok := runningProxies.Load(agentID); ok {
-			if server, ok := val.(*proxy.ProxyServer); ok && server.Listener != nil {
-				_, portStr, _ := net.SplitHostPort(server.Listener.Addr().String())
-				proxyPort = portStr
+			if server, ok := val.(*proxy.ProxyServer); ok {
+				if addr := server.ListenerAddr(); addr != nil {
+					_, proxyPort, _ = net.SplitHostPort(addr.String())
+				}
 			}
 		}
 
@@ -859,8 +857,8 @@ func AddCommands(app *grumble.App) {
 				portAvailable := true
 				runningProxies.Range(func(key, value interface{}) bool {
 					server := value.(*proxy.ProxyServer)
-					if server.Listener != nil {
-						_, serverPort, _ := net.SplitHostPort(server.Listener.Addr().String())
+					if addr := server.ListenerAddr(); addr != nil {
+						_, serverPort, _ := net.SplitHostPort(addr.String())
 						if serverPort == port {
 							portAvailable = false
 							return false
@@ -882,14 +880,15 @@ func AddCommands(app *grumble.App) {
 			listenAddr = fmt.Sprintf("%s:%s", host, port)
 			proxyServer.Start(listenAddr)
 
-			if proxyServer.Listener == nil {
+			addr := proxyServer.ListenerAddr()
+			if addr == nil {
 				log.Error().Str("addr", listenAddr).Msg("Failed to start proxy")
 				return nil
 			}
 
 			runningProxies.Store(selectedAgent, proxyServer)
 
-			_, portStr, _ := net.SplitHostPort(proxyServer.Listener.Addr().String())
+			_, portStr, _ := net.SplitHostPort(addr.String())
 			log.Info().Str("agent_id", selectedAgent).Str("port", portStr).Msg("Proxy started")
 
 			return nil
@@ -915,7 +914,7 @@ func AddCommands(app *grumble.App) {
 
 			// Stop the proxy
 			server := val.(*proxy.ProxyServer)
-			server.Stop()
+			server.StopListening()
 
 			log.Info().Str("agent_id", selectedAgent).Msg("Proxy stopped")
 

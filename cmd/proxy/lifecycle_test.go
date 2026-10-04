@@ -157,7 +157,7 @@ func TestSessionDisconnectAndIdleAgent(t *testing.T) {
 	testGeneration(t, "idle", l)
 	agent, peer, c := connectAgent(t, l)
 	// No SOCKS listener has started. Receiver must remain live and monitor EOF.
-	if agent.server.Listener != nil {
+	if agent.server.ListenerAddr() != nil {
 		t.Fatal("SOCKS started unexpectedly")
 	}
 	select {
