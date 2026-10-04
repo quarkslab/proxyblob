@@ -119,7 +119,9 @@ func (h *BaseHandler) ReceiveLoop() {
 	// records back to back, or a whole record plus the head of the next one.
 	// The accumulator below therefore lives OUTSIDE the read loop so that a
 	// record straddling two Read calls is reassembled rather than discarded.
-	buffer := make([]byte, 16*1024*1024)
+	// The read size only bounds how many iterations a large payload takes, never
+	// how it is framed, so it costs nothing to keep it small.
+	buffer := make([]byte, 64*1024)
 	acc := make([]byte, 0, HeaderSize+MaxPacketDataSize)
 
 	for {
@@ -130,6 +132,64 @@ func (h *BaseHandler) ReceiveLoop() {
 		}
 
 		n, err := h.conn.Read(buffer)
+		// Read may return both bytes and an error. Dispatch every complete
+		// record before applying the transport error policy below.
+		if err == nil {
+			consecutiveErrors = 0
+		}
+		if h.OnReceive != nil && (n > 0 || err == nil) {
+			h.OnReceive()
+		}
+		if n > 0 {
+			acc = append(acc, buffer[:n]...)
+
+			// Drain every complete record currently buffered. offset tracks how much
+			// of acc has been consumed so the remainder can be kept for the next Read.
+			offset := 0
+			for {
+				packet, consumed, perr := ParseNext(acc[offset:])
+				if perr != nil {
+					if errors.Is(perr, ErrShortPacket) {
+						// Nothing was consumed: the trailing bytes are the head of a
+						// record whose tail has not arrived yet. Keep them.
+						break
+					}
+
+					// Malformed framing is unrecoverable. A length-prefixed stream has
+					// no resync point, and the uuid in a bogus header is garbage, so
+					// closing "just that connection" would target a random one while
+					// the stream stayed misaligned. Tear the handler down.
+					log.Error().
+						Err(perr).
+						Int("buffered", len(acc)-offset).
+						Msg("Malformed protocol framing, tearing down handler")
+					h.Stop()
+					return
+				}
+				offset += consumed
+
+				errCode := h.handlePacket(packet)
+				if errCode != ErrNone {
+					if h.Ctx.Err() != nil {
+						break
+					}
+					// Async close dispatch to avoid blocking ReceiveLoop on writes
+					go h.SendClose(packet.ConnectionID, errCode)
+				}
+			}
+
+			// Compact only when something was consumed. copy has memmove semantics
+			// and the destination index is <= the source index, so the overlapping
+			// slide is safe.
+			if offset > 0 {
+				if offset == len(acc) {
+					acc = acc[:0]
+				} else {
+					acc = acc[:copy(acc, acc[offset:])]
+				}
+			}
+		}
+
 		if err != nil {
 			// Terminal transport errors: the connection will never yield bytes
 			// again, so backing off would spin forever while h.Stop() never runs
@@ -169,64 +229,6 @@ func (h *BaseHandler) ReceiveLoop() {
 			case <-h.Ctx.Done():
 				return
 			case <-time.After(backoff):
-			}
-			continue
-		}
-
-		consecutiveErrors = 0
-		if h.OnReceive != nil {
-			h.OnReceive()
-		}
-
-		if n == 0 {
-			continue
-		}
-
-		acc = append(acc, buffer[:n]...)
-
-		// Drain every complete record currently buffered. offset tracks how much
-		// of acc has been consumed so the remainder can be kept for the next Read.
-		offset := 0
-		for {
-			packet, consumed, perr := ParseNext(acc[offset:])
-			if perr != nil {
-				if errors.Is(perr, ErrShortPacket) {
-					// Nothing was consumed: the trailing bytes are the head of a
-					// record whose tail has not arrived yet. Keep them.
-					break
-				}
-
-				// Malformed framing is unrecoverable. A length-prefixed stream has
-				// no resync point, and the uuid in a bogus header is garbage, so
-				// closing "just that connection" would target a random one while
-				// the stream stayed misaligned. Tear the handler down.
-				log.Error().
-					Err(perr).
-					Int("buffered", len(acc)-offset).
-					Msg("Malformed protocol framing, tearing down handler")
-				h.Stop()
-				return
-			}
-			offset += consumed
-
-			errCode := h.handlePacket(packet)
-			if errCode != ErrNone {
-				if h.Ctx.Err() != nil {
-					break
-				}
-				// Async close dispatch to avoid blocking ReceiveLoop on writes
-				go h.SendClose(packet.ConnectionID, errCode)
-			}
-		}
-
-		// Compact only when something was consumed. copy has memmove semantics
-		// and the destination index is <= the source index, so the overlapping
-		// slide is safe.
-		if offset > 0 {
-			if offset == len(acc) {
-				acc = acc[:0]
-			} else {
-				acc = acc[:copy(acc, acc[offset:])]
 			}
 		}
 	}
