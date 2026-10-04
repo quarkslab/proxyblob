@@ -198,7 +198,7 @@ func (s *ProxyServer) acceptLoop(listener net.Listener) {
 				return
 			}
 
-			go s.handleConnection(conn)
+			go s.handleConnection(listener, conn)
 		}
 	}
 }
@@ -223,7 +223,7 @@ const AckTimeout = 120 * time.Second
 //   - Initiating connection with remote agent
 //   - Setting up bidirectional data forwarding
 //   - Managing connection lifecycle and cleanup
-func (s *ProxyServer) handleConnection(clientConn net.Conn) {
+func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Conn) {
 	defer clientConn.Close()
 
 	// Enable TCP_NODELAY to disable Nagle's algorithm for better TLS performance
@@ -233,7 +233,13 @@ func (s *ProxyServer) handleConnection(clientConn net.Conn) {
 
 	connID := uuid.New()
 	proxyConn := protocol.NewConnection(connID, s.Ctx.Done())
+	s.lifecycleMu.Lock()
+	if s.listener != listener || s.Ctx.Err() != nil {
+		s.lifecycleMu.Unlock()
+		return
+	}
 	s.Connections.Store(proxyConn.ID, proxyConn)
+	s.lifecycleMu.Unlock()
 
 	// 1. Initiate connection with the agent
 	errCode := s.SendNewConnection(connID)
@@ -247,6 +253,10 @@ func (s *ProxyServer) handleConnection(clientConn net.Conn) {
 	// on that signal rather than polling for the pointer.
 	select {
 	case <-s.Ctx.Done():
+		s.SendClose(connID, protocol.ErrHandlerStopped)
+		s.Connections.Delete(connID)
+		return
+	case <-proxyConn.Closed:
 		s.SendClose(connID, protocol.ErrHandlerStopped)
 		s.Connections.Delete(connID)
 		return
