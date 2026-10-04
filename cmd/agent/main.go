@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"os/user"
@@ -45,6 +46,24 @@ type Agent struct {
 	Handler *proxy.SocksHandler // SOCKS handler
 }
 
+// connectionOptions restores the bootstrap namespace advertised by the proxy.
+// Older credentials without metadata retain aznet's default endpoints.
+func connectionOptions(address string) ([]aznet.Option, error) {
+	u, err := url.Parse(address)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	h, t := q.Get("proxyblob-handshake"), q.Get("proxyblob-token")
+	if h == "" && t == "" {
+		return nil, nil
+	}
+	if h == "" || t == "" || h == t || q.Get(h) == "" || q.Get(t) == "" {
+		return nil, fmt.Errorf("incomplete bootstrap namespace")
+	}
+	return []aznet.Option{aznet.WithEndpoints(h, t)}, nil
+}
+
 // NewAgent creates an agent from a connection string.
 func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	// Decode and parse the connection string
@@ -56,7 +75,12 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	// Dial to the proxy, leaving the polling intervals at aznet's defaults.
 	// Polling faster than the default mostly bills empty reads, and the added
 	// request volume competes with the transfers it is meant to accelerate.
-	conn, err := aznet.Dial(driver, address, aznet.WithContext(ctx))
+	opts, err := connectionOptions(address)
+	if err != nil {
+		return nil, ErrConnectionStringError
+	}
+	opts = append(opts, aznet.WithContext(ctx))
+	conn, err := aznet.Dial(driver, address, opts...)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to dial proxy")
 		return nil, ErrConnectionStringError

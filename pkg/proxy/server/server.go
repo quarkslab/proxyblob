@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"proxyblob/pkg/protocol"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +25,10 @@ type ProxyServer struct {
 	*protocol.BaseHandler
 
 	// Listener accepts incoming TCP connections
-	Listener net.Listener
+	Listener    net.Listener
+	receiveOnce sync.Once
+	lifecycleMu sync.Mutex
+	stopOnce    sync.Once
 }
 
 // NewProxyServer creates a proxy server instance with the given connection.
@@ -40,26 +44,39 @@ func NewProxyServer(ctx context.Context, conn net.Conn) *ProxyServer {
 // It launches background goroutines for accepting connections and processing
 // protocol messages. If listening fails, the server is stopped.
 func (s *ProxyServer) Start(address string) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.Ctx.Err() != nil || s.Listener != nil {
+		return
+	}
 	var err error
 	s.Listener, err = net.Listen("tcp", address)
 	if err != nil {
 		log.Error().Err(err).Str("addr", address).Msg("Failed to listen on address")
-		s.Stop()
+		s.Cancel()
 		return
 	}
 
-	go s.ReceiveLoop()
+	s.StartReceiving()
 	go s.acceptLoop()
 }
+
+// StartReceiving monitors the tunnel independently of the local SOCKS listener.
+// Start may be called later without creating a second reader.
+func (s *ProxyServer) StartReceiving() { s.receiveOnce.Do(func() { go s.ReceiveLoop() }) }
 
 // Stop gracefully terminates the proxy server by closing all active
 // connections, canceling the handler's context, and stopping the listener.
 func (s *ProxyServer) Stop() {
-	s.CloseAllConnections()
-	s.Cancel()
-	if s.Listener != nil {
-		s.Listener.Close()
-	}
+	s.stopOnce.Do(func() {
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		s.CloseAllConnections()
+		s.Cancel()
+		if s.Listener != nil {
+			s.Listener.Close()
+		}
+	})
 }
 
 // OnNew handles new connection requests. The server is the only one initiating
