@@ -78,7 +78,12 @@ func (s *ProxyServer) StopListening() {
 		s.listener.Close()
 		s.listener = nil
 	}
-	s.CloseAllConnections()
+	// Keep entries until each handler sends its CLOSE after any queued NEW.
+	// Removing here would make SendClose silently skip peer notification.
+	s.Connections.Range(func(_, value any) bool {
+		value.(*protocol.Connection).Close()
+		return true
+	})
 }
 
 // StartReceiving monitors the tunnel independently of the local SOCKS listener.

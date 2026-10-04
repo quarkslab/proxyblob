@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
+	"proxyblob/pkg/protocol"
 	"sync"
 	"testing"
 	"time"
@@ -116,5 +118,48 @@ func TestLateLocalAcceptance(t *testing.T) {
 	s.Connections.Range(func(_, _ any) bool { t.Error("stale connection published"); return false })
 	if s.ListenerAddr() == nil || s.Ctx.Err() != nil {
 		t.Fatal("replacement affected")
+	}
+}
+
+func TestLocalStopNotifiesPeerAfterNew(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	s := NewProxyServer(context.Background(), conn)
+	defer s.Stop()
+	s.Start("127.0.0.1:0")
+	client, err := net.Dial("tcp", s.ListenerAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	// Leave NEW's write blocked until after local stop, reproducing admission
+	// racing shutdown while the session stays alive.
+	deadline := time.Now().Add(time.Second)
+	for {
+		found := false
+		s.Connections.Range(func(_, _ any) bool { found = true; return false })
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("client not registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	s.StopListening()
+	peer.SetReadDeadline(time.Now().Add(time.Second))
+	for _, want := range []byte{protocol.CmdNew, protocol.CmdClose} {
+		header := make([]byte, protocol.HeaderSize)
+		if _, err := io.ReadFull(peer, header); err != nil {
+			t.Fatalf("missing peer record %d: %v", want, err)
+		}
+		if header[0] != want {
+			t.Fatalf("record %d, want %d", header[0], want)
+		}
+		payload := make([]byte, binary.BigEndian.Uint32(header[17:]))
+		if _, err := io.ReadFull(peer, payload); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
