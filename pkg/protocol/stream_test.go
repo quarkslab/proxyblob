@@ -48,6 +48,7 @@ func TestConfirmedWritesAndShortCounts(t *testing.T) {
 			id := uuid.New()
 			c := NewConnection(id, h.Ctx.Done())
 			h.Connections.Store(id, c)
+			c.setPeerWindow(uint64(DefaultFlowConfig().StreamWindow))
 			pc := NewProtocolConn(h.Ctx, id, h)
 			c.SetProtocolConn(pc)
 			n, err := pc.Write([]byte("request"))
@@ -87,6 +88,7 @@ func TestBlockedWriteAbortAndBoundedDrain(t *testing.T) {
 			id := uuid.New()
 			c := NewConnection(id, h.Ctx.Done())
 			h.Connections.Store(id, c)
+			c.setPeerWindow(uint64(DefaultFlowConfig().StreamWindow))
 			pc := NewProtocolConn(h.Ctx, id, h)
 			c.SetProtocolConn(pc)
 			result := make(chan error, 1)
@@ -118,7 +120,7 @@ func TestBlockedWriteAbortAndBoundedDrain(t *testing.T) {
 	})
 }
 
-func TestConnectionDrainsBothQueuesBeforeEOF(t *testing.T) {
+func TestConnectionDrainsReservedBufferBeforeEOF(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -222,7 +224,7 @@ func TestAbortReleasesBlockedDelivery(t *testing.T) {
 			for c.Deliver([]byte("x")) {
 			}
 		}()
-		synctest.Wait() // both queues and the delivery worker are blocked
+		synctest.Wait() // producer has filled the bounded receive buffer
 		c.Close()
 		<-done
 	})
@@ -261,7 +263,7 @@ func TestReceiveDrainsAcceptedBytesBeforeTerminalError(t *testing.T) {
 	for _, terminal := range []error{io.EOF, io.ErrClosedPipe} {
 		t.Run(terminal.Error(), func(t *testing.T) {
 			id := uuid.New()
-			want := bytes.Repeat([]byte("tail"), 40000)
+			want := bytes.Repeat([]byte("tail"), 15000)
 			transport := &finalReadConn{shortConn: shortConn{limit: 1 << 20}, data: NewPacket(CmdData, id, want).Encode(), err: terminal}
 			h := &streamHandler{NewBaseHandler(context.Background(), transport)}
 			h.PacketHandler = h
@@ -270,6 +272,7 @@ func TestReceiveDrainsAcceptedBytesBeforeTerminalError(t *testing.T) {
 			c.SetProtocolConn(pc)
 			c.StartDelivery()
 			h.Connections.Store(id, c)
+			c.setPeerWindow(uint64(DefaultFlowConfig().StreamWindow))
 			done := make(chan struct{})
 			go func() { h.ReceiveLoop(); close(done) }()
 			got, err := io.ReadAll(pc)
@@ -300,6 +303,7 @@ func TestReceiveTruncatedRecordIsNotGracefulEOF(t *testing.T) {
 	c.SetProtocolConn(pc)
 	c.StartDelivery()
 	h.Connections.Store(id, c)
+	c.setPeerWindow(uint64(DefaultFlowConfig().StreamWindow))
 	done := make(chan struct{})
 	go func() { h.ReceiveLoop(); close(done) }()
 	got, err := io.ReadAll(pc)

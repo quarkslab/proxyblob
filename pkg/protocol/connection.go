@@ -1,7 +1,9 @@
 package protocol
 
 import (
+	"context"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -13,21 +15,30 @@ import (
 // Connection owns a logical stream and its attached destination. Close aborts;
 // FinishDelivery seals incoming data and lets the reader drain to EOF.
 type Connection struct {
-	ID            uuid.UUID
-	protoConn     atomic.Pointer[ProtocolConn]
-	established   chan struct{}
-	mu            sync.Mutex
-	destination   net.Conn
-	disposed      bool
-	Closed        chan struct{}
-	closeOnce     sync.Once
-	deliveryOnce  sync.Once
-	deliveryMu    sync.Mutex
-	deliveryEnded bool
-	deliveryErr   error
-	deliverCh     chan []byte
-	stop          <-chan struct{}
-	CreatedAt     time.Time
+	ID                             uuid.UUID
+	protoConn                      atomic.Pointer[ProtocolConn]
+	established                    chan struct{}
+	mu                             sync.Mutex
+	destination                    net.Conn
+	disposed                       bool
+	Closed                         chan struct{}
+	closeOnce                      sync.Once
+	peerCloseOnce                  sync.Once
+	handler                        *BaseHandler
+	buffer                         []byte
+	head, used                     int
+	consumed                       uint64
+	changed                        chan struct{}
+	sendEnded                      bool
+	sendMu                         sync.Mutex
+	creditMu                       sync.Mutex
+	creditWake                     chan struct{}
+	peerWindow, sent, peerConsumed uint64
+	deliveryMu                     sync.Mutex
+	deliveryEnded                  bool
+	deliveryErr                    error
+	stop                           <-chan struct{}
+	CreatedAt                      time.Time
 }
 
 var neverStop = make(chan struct{})
@@ -36,7 +47,7 @@ func NewConnection(id uuid.UUID, stop <-chan struct{}) *Connection {
 	if stop == nil {
 		stop = neverStop
 	}
-	return &Connection{ID: id, Closed: make(chan struct{}), established: make(chan struct{}), deliverCh: make(chan []byte, 1024), stop: stop, CreatedAt: time.Now()}
+	return &Connection{ID: id, Closed: make(chan struct{}), established: make(chan struct{}), changed: make(chan struct{}), creditWake: make(chan struct{}), stop: stop, CreatedAt: time.Now()}
 }
 
 func (c *Connection) ProtocolConn() *ProtocolConn { return c.protoConn.Load() }
@@ -49,6 +60,7 @@ func (c *Connection) SetProtocolConn(pc *ProtocolConn) bool {
 		pc.Shutdown()
 		return false
 	}
+	pc.owner = c
 	c.protoConn.Store(pc)
 	close(c.established)
 	return true
@@ -84,12 +96,20 @@ func (c *Connection) Close() byte {
 		if dst != nil {
 			dst.Close()
 		}
+		c.deliveryMu.Lock()
+		c.buffer = nil
+		c.used = 0
+		h := c.handler
+		c.deliveryMu.Unlock()
+		if h != nil {
+			h.releaseReservation(c)
+		}
 	})
 	return ErrNone
 }
 
-// Deliver serializes admission with the EOF marker. Acceptance is queue
-// ownership, not proof of delivery; abort is always reported as an error.
+// Deliver copies into the one reserved receive ring. It never waits for the
+// application: data beyond the advertised window is a protocol violation.
 func (c *Connection) Deliver(data []byte) bool {
 	c.deliveryMu.Lock()
 	defer c.deliveryMu.Unlock()
@@ -103,48 +123,86 @@ func (c *Connection) Deliver(data []byte) bool {
 		return false
 	default:
 	}
-	select {
-	case c.deliverCh <- append([]byte(nil), data...):
-		return true
-	case <-c.Closed:
-		return false
-	case <-c.stop:
+	if c.buffer == nil {
+		c.buffer = make([]byte, DefaultFlowConfig().StreamWindow)
+	}
+	if len(data) > len(c.buffer)-c.used {
 		return false
 	}
+	tail := (c.head + c.used) % len(c.buffer)
+	n := copy(c.buffer[tail:], data)
+	copy(c.buffer, data[n:])
+	c.used += len(data)
+	c.notifyReader()
+	return true
 }
 
+func (c *Connection) notifyReader()   { close(c.changed); c.changed = make(chan struct{}) }
 func (c *Connection) FinishDelivery() { c.finishDelivery(io.EOF) }
-
 func (c *Connection) finishDelivery(err error) {
 	c.deliveryMu.Lock()
 	defer c.deliveryMu.Unlock()
 	if !c.deliveryEnded {
 		c.deliveryEnded = true
 		c.deliveryErr = err
-		close(c.deliverCh)
+		c.notifyReader()
 	}
 }
 
-func (c *Connection) StartDelivery() {
-	c.deliveryOnce.Do(func() {
-		pc := c.ProtocolConn()
-		go func() {
-			for {
-				select {
-				case data, ok := <-c.deliverCh:
-					if !ok {
-						pc.finishRead(c.deliveryErr)
-						return
-					}
-					if !pc.DeliverData(data) {
-						return
-					}
-				case <-c.Closed:
-					return
-				case <-c.stop:
-					return
-				}
+// StartDelivery is retained for callers; delivery now goes straight into the
+// reserved ring, with no worker or second queue.
+func (c *Connection) StartDelivery() {}
+
+func (c *Connection) read(ctx context.Context, closed <-chan struct{}, b []byte) (int, error) {
+	for {
+		c.deliveryMu.Lock()
+		select {
+		case <-c.Closed:
+			c.deliveryMu.Unlock()
+			return 0, net.ErrClosed
+		case <-closed:
+			c.deliveryMu.Unlock()
+			return 0, net.ErrClosed
+		case <-ctx.Done():
+			c.deliveryMu.Unlock()
+			return 0, ctx.Err()
+		default:
+		}
+		if c.used > 0 {
+			n := min(len(b), c.used)
+			first := copy(b[:n], c.buffer[c.head:min(c.head+n, len(c.buffer))])
+			copy(b[first:n], c.buffer[:n-first])
+			c.head = (c.head + n) % len(c.buffer)
+			c.used -= n
+			if c.consumed > math.MaxUint64-uint64(n) {
+				c.deliveryMu.Unlock()
+				return 0, ErrFlowControl
 			}
-		}()
-	})
+			c.consumed += uint64(n)
+			consumed, h := c.consumed, c.handler
+			// The bytes have left the ring. Read's caller now owns its own bounded
+			// buffer; no protocol queue retains the delivered allocation.
+			if h != nil {
+				h.queueCredit(c.ID, consumed)
+			}
+			c.deliveryMu.Unlock()
+			return n, nil
+		}
+		if c.deliveryEnded {
+			err := c.deliveryErr
+			c.deliveryMu.Unlock()
+			return 0, err
+		}
+		wake := c.changed
+		c.deliveryMu.Unlock()
+		select {
+		case <-wake:
+		case <-c.Closed:
+			return 0, net.ErrClosed
+		case <-closed:
+			return 0, net.ErrClosed
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
 }

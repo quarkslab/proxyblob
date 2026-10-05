@@ -42,7 +42,7 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 			pc := protocol.NewProtocolConn(base.Ctx, id, base)
 			c.SetProtocolConn(pc)
 			c.StartDelivery()
-			// More than readBuffer's capacity leaves accepted bytes in deliverCh.
+			// Many small records must drain in order from the reserved buffer.
 			var want []byte
 			for i := 0; i < 1500; i++ {
 				b := []byte{byte(i)}

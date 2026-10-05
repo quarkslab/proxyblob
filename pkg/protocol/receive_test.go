@@ -68,7 +68,7 @@ func runReceive(t *testing.T, reads []receiveRead, want []*Packet, calls int) {
 	conn := &receiveConn{t: t, reads: reads}
 	handler := &receiveHandler{cancel: cancel}
 	// Construct just the receiver: these cases must not start a writer goroutine.
-	h := &BaseHandler{conn: conn, Ctx: ctx, Cancel: cancel, PacketHandler: handler}
+	h := &BaseHandler{flow: DefaultFlowConfig(), conn: conn, Ctx: ctx, Cancel: cancel, PacketHandler: handler}
 	h.ReceiveLoop()
 	if handler.stops != 1 {
 		t.Errorf("Stop calls = %d, want 1", handler.stops)

@@ -45,15 +45,20 @@ type BaseHandler struct {
 	// conn handles underlying packet transmission (direct net.Conn)
 	conn net.Conn
 
-	// writeCh buffers encoded packets for the writeLoop goroutine
-	writeCh     chan writeRequest
-	admissionMu sync.RWMutex
-	drainOnce   sync.Once
-	draining    chan struct{}
-	writerDone  chan struct{}
-	abortDone   chan struct{}
-	writeErrMu  sync.Mutex
-	writeErr    error
+	// The writer owns bounded DATA and control queues.
+	queueMu           sync.Mutex
+	controls, data    []*writeRequest
+	credits           map[uuid.UUID]*writeRequest
+	wake              chan struct{}
+	flow              FlowConfig
+	flowMu            sync.Mutex
+	reserved, streams int
+	drainOnce         sync.Once
+	draining          chan struct{}
+	writerDone        chan struct{}
+	abortDone         chan struct{}
+	writeErrMu        sync.Mutex
+	writeErr          error
 
 	// Connections maps UUIDs to active Connection objects
 	Connections sync.Map
@@ -74,13 +79,26 @@ type BaseHandler struct {
 // NewBaseHandler creates a handler with specified context and connection.
 // Uses background context if parent context is nil.
 func NewBaseHandler(parentCtx context.Context, conn net.Conn) *BaseHandler {
+	h, err := NewBaseHandlerWithConfig(parentCtx, conn, DefaultFlowConfig())
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func NewBaseHandlerWithConfig(parentCtx context.Context, conn net.Conn, cfg FlowConfig) (*BaseHandler, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	h := &BaseHandler{
 		conn:       conn,
-		writeCh:    make(chan writeRequest, 1024),
+		flow:       cfg,
+		wake:       make(chan struct{}, 1),
+		credits:    make(map[uuid.UUID]*writeRequest),
 		draining:   make(chan struct{}),
 		writerDone: make(chan struct{}),
 		abortDone:  make(chan struct{}),
@@ -98,7 +116,7 @@ func NewBaseHandler(parentCtx context.Context, conn net.Conn) *BaseHandler {
 		h.CloseAllConnections()
 		close(h.abortDone)
 	}()
-	return h
+	return h, nil
 }
 
 // ReceiveLoop processes incoming packets until the transport dies or the
@@ -193,8 +211,8 @@ func (h *BaseHandler) ReceiveLoop() {
 					if h.Ctx.Err() != nil {
 						break
 					}
-					// Async close dispatch to avoid blocking ReceiveLoop on writes
-					go h.SendClose(packet.ConnectionID, errCode)
+					// Control admission is bounded and nonblocking.
+					h.rejectStream(packet.ConnectionID, errCode)
 				}
 			}
 
@@ -263,9 +281,23 @@ func (h *BaseHandler) ReceiveLoop() {
 func (h *BaseHandler) handlePacket(packet *Packet) byte {
 	switch packet.Command {
 	case CmdNew:
+		if _, err := peerWindow(packet.Data); err != nil {
+			return h.badHandshake(err)
+		}
 		return h.PacketHandler.OnNew(packet.ConnectionID, packet.Data)
 	case CmdAck:
+		window, err := peerWindow(packet.Data)
+		if err != nil {
+			return h.badHandshake(err)
+		}
+		if v, ok := h.Connections.Load(packet.ConnectionID); ok {
+			if err := v.(*Connection).setPeerWindow(window); err != nil {
+				return ErrInvalidState
+			}
+		}
 		return h.PacketHandler.OnAck(packet.ConnectionID, packet.Data)
+	case CmdCredit:
+		return h.receiveCredit(packet.ConnectionID, packet.Data)
 	case CmdData:
 		return h.PacketHandler.OnData(packet.ConnectionID, packet.Data)
 	case CmdEOF:
@@ -278,7 +310,7 @@ func (h *BaseHandler) handlePacket(packet *Packet) byte {
 		// panic. This is a per-connection error and deliberately NOT malformed
 		// framing: the length prefix was intact and the byte stream is still in
 		// sync, so it must not tear down the whole handler.
-		if len(packet.Data) == 0 {
+		if len(packet.Data) != 1 {
 			return ErrInvalidPacket
 		}
 		return h.PacketHandler.OnClose(packet.ConnectionID, packet.Data[0])
@@ -290,13 +322,13 @@ func (h *BaseHandler) handlePacket(packet *Packet) byte {
 // SendNewConnection initiates a new connection.
 // Returns error code indicating success or specific failure.
 func (h *BaseHandler) SendNewConnection(connectionID uuid.UUID) byte {
-	return h.sendPacket(CmdNew, connectionID, nil)
+	return h.sendPacket(CmdNew, connectionID, h.handshake())
 }
 
 // SendConnAck acknowledges connection.
 // Returns error code indicating success or specific failure.
 func (h *BaseHandler) SendConnAck(connectionID uuid.UUID) byte {
-	return h.sendPacket(CmdAck, connectionID, nil)
+	return h.sendPacket(CmdAck, connectionID, h.handshake())
 }
 
 // SendData sends data.
@@ -307,7 +339,7 @@ func (h *BaseHandler) SendData(connectionID uuid.UUID, data []byte) byte {
 		return ErrConnectionNotFound
 	}
 
-	if err := h.sendData(connectionID, data, nil); err != nil {
+	if _, err := h.sendBytes(connectionID, data, nil); err != nil {
 		return ErrPacketSendFailed
 	}
 	return ErrNone
@@ -349,10 +381,9 @@ func (h *BaseHandler) FinishConnection(id uuid.UUID) byte {
 const DrainTimeout = 5 * time.Second
 
 func (h *BaseHandler) drainReceived(readErr error) {
-	ctx, cancel := context.WithTimeout(h.Ctx, DrainTimeout)
+	ctx, cancel := context.WithTimeout(h.Ctx, h.flow.DrainTimeout)
 	defer cancel()
-	// Run the seal/wait separately: a full delivery queue can hold its admission
-	// lock until cancellation releases it.
+	// Bound the application drain; ordinary stream EOF has no transfer timeout.
 	done := make(chan struct{})
 	go func() {
 		h.Connections.Range(func(_, value any) bool { value.(*Connection).finishDelivery(readErr); return true })
@@ -395,17 +426,51 @@ func (h *BaseHandler) PeerClose(id uuid.UUID, code byte) byte {
 		h.Connections.Delete(id)
 		return ErrNone
 	}
-	go func() {
-		timer := time.NewTimer(DrainTimeout)
-		defer timer.Stop()
-		select {
-		case <-c.Closed:
-		case <-timer.C:
-			log.Warn().Str("conn_id", id.String()).Msg("Peer close drain forced to abort")
-			c.Close()
-			h.Connections.CompareAndDelete(id, c)
-		}
-	}()
+	c.peerCloseOnce.Do(func() {
+		go func() {
+			timer := time.NewTimer(h.flow.DrainTimeout)
+			defer timer.Stop()
+			select {
+			case <-c.Closed:
+			case <-timer.C:
+				log.Warn().Str("conn_id", id.String()).Msg("Peer close drain forced to abort")
+				c.Close()
+				h.Connections.CompareAndDelete(id, c)
+			}
+		}()
+	})
 	c.FinishDelivery()
 	return ErrNone
+}
+
+func (h *BaseHandler) badHandshake(err error) byte {
+	log.Error().Err(err).Uint32("supported_version", ProtocolVersion).Msg("Tunnel protocol negotiation rejected")
+	h.Cancel()
+	return ErrInvalidPacket
+}
+
+func (h *BaseHandler) rejectStream(id uuid.UUID, code byte) {
+	if v, ok := h.Connections.Load(id); ok {
+		v.(*Connection).Close()
+		h.Connections.CompareAndDelete(id, v)
+	}
+	h.sendPacket(CmdClose, id, []byte{code})
+}
+
+// AcceptConnection negotiates the sender window after reserving our receive
+// memory. Used by the agent before acknowledging a NEW.
+func (h *BaseHandler) AcceptConnection(id uuid.UUID, data []byte) (*Connection, error) {
+	window, err := peerWindow(data)
+	if err != nil {
+		return nil, err
+	}
+	c := NewConnection(id, h.Ctx.Done())
+	if err := h.RegisterConnection(c); err != nil {
+		return nil, err
+	}
+	if err := c.setPeerWindow(window); err != nil {
+		c.Close()
+		return nil, err
+	}
+	return c, nil
 }

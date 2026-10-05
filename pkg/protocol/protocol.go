@@ -31,11 +31,12 @@ var (
 
 // Command types for protocol operations.
 const (
-	CmdNew   byte = iota + 1 // Request new connection
-	CmdAck                   // Acknowledge connection
-	CmdData                  // Transfer data
-	CmdClose                 // Terminate connection
-	CmdEOF                   // End only the sender's data direction (coordinated rollout)
+	CmdNew    byte = iota + 1 // Request new connection
+	CmdAck                    // Acknowledge connection
+	CmdData                   // Transfer data
+	CmdClose                  // Terminate connection
+	CmdEOF                    // End only the sender's data direction (coordinated rollout)
+	CmdCredit                 // Cumulative bytes consumed from the receive reservation
 )
 
 // Protocol packet field sizes in bytes.
@@ -120,7 +121,7 @@ func ParseNext(buf []byte) (*Packet, int, error) {
 	}
 
 	command := buf[0]
-	if command < CmdNew || command > CmdEOF {
+	if command < CmdNew || command > CmdCredit {
 		return nil, 0, ErrMalformedPacket
 	}
 

@@ -19,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"proxyblob/pkg/protocol"
 	proxy "proxyblob/pkg/proxy/socks"
 
 	"github.com/atsika/aznet"
@@ -113,7 +114,17 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	}
 
 	// Create SOCKS handler with direct connection (no transport wrapper)
-	handler := proxy.NewSocksHandler(ctx, conn)
+	cfg, err := protocol.FlowConfigFromEnv()
+	if err != nil {
+		log.Error().Err(err).Msg("Invalid flow limits")
+		conn.Close()
+		return nil, ErrConnectionStringError
+	}
+	handler, err := proxy.NewSocksHandlerWithConfig(ctx, conn, cfg)
+	if err != nil {
+		conn.Close()
+		return nil, ErrConnectionStringError
+	}
 
 	agent := &Agent{
 		Handler: handler,

@@ -24,10 +24,21 @@ type SocksHandler struct {
 // NewSocksHandler creates a SOCKS5 handler with the given connection.
 // The connection is used for sending and receiving protocol messages.
 func NewSocksHandler(ctx context.Context, conn net.Conn) *SocksHandler {
-	handler := &SocksHandler{}
-	handler.BaseHandler = protocol.NewBaseHandler(ctx, conn)
-	handler.PacketHandler = handler
+	handler, err := NewSocksHandlerWithConfig(ctx, conn, protocol.DefaultFlowConfig())
+	if err != nil {
+		panic(err)
+	}
 	return handler
+}
+
+func NewSocksHandlerWithConfig(ctx context.Context, conn net.Conn, cfg protocol.FlowConfig) (*SocksHandler, error) {
+	base, err := protocol.NewBaseHandlerWithConfig(ctx, conn, cfg)
+	if err != nil {
+		return nil, err
+	}
+	handler := &SocksHandler{BaseHandler: base}
+	handler.PacketHandler = handler
+	return handler, nil
 }
 
 // Start begins processing SOCKS5 requests. The address parameter is ignored
@@ -52,8 +63,10 @@ func (h *SocksHandler) OnNew(connectionID uuid.UUID, data []byte) byte {
 	}
 
 	// Create new connection
-	conn := protocol.NewConnection(connectionID, h.Ctx.Done())
-	h.Connections.Store(conn.ID, conn)
+	conn, err := h.AcceptConnection(connectionID, data)
+	if err != nil {
+		return protocol.ErrInvalidState
+	}
 	if h.Ctx.Err() != nil {
 		conn.Close()
 		h.Connections.Delete(conn.ID)
@@ -84,10 +97,7 @@ func (h *SocksHandler) OnAck(connectionID uuid.UUID, data []byte) byte {
 	return protocol.ErrUnexpectedPacket
 }
 
-// OnData processes incoming data for a connection by handing the payload to
-// the connection's delivery goroutine, which feeds the virtual protocol
-// connection read by the SOCKS flow. The call blocks while the reader is busy,
-// applying back-pressure rather than dropping data.
+// OnData admits bytes into the stream reservation without blocking dispatch.
 func (h *SocksHandler) OnData(connectionID uuid.UUID, data []byte) byte {
 	value, ok := h.Connections.Load(connectionID)
 	if !ok {
@@ -101,9 +111,8 @@ func (h *SocksHandler) OnData(connectionID uuid.UUID, data []byte) byte {
 		return protocol.ErrInvalidState
 	}
 
-	// Deliver blocks until the payload is accepted by the per-connection
-	// goroutine, so back-pressure never discards data. A false return means the
-	// connection is closed or the handler is shutting down.
+	// Delivery uses reserved memory and never blocks shared dispatch. The
+	// sender must pause before exhausting its negotiated receive credit.
 	if !conn.Deliver(data) {
 		return protocol.ErrConnectionClosed
 	}

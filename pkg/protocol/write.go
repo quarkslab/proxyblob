@@ -2,29 +2,36 @@ package protocol
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type writeRequest struct {
-	data []byte
-	done chan error
+	data   []byte
+	done   chan error
+	id     uuid.UUID
+	credit bool
+}
+
+func (h *BaseHandler) signalWriter() {
+	select {
+	case h.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan struct{}, confirmed bool) (chan error, error) {
-	if len(data) > MaxPacketDataSize {
+	if len(data) > h.flow.DataFrame && cmd == CmdData || len(data) > 12 && cmd != CmdData {
 		return nil, ErrMalformedPacket
 	}
-	req := writeRequest{data: NewPacket(cmd, id, data).Encode()}
-	if confirmed {
-		req.done = make(chan error, 1)
-	}
-	h.admissionMu.RLock()
-	defer h.admissionMu.RUnlock()
+	h.queueMu.Lock()
+	defer h.queueMu.Unlock()
 	select {
 	case <-h.draining:
 		return nil, net.ErrClosed
@@ -34,27 +41,62 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 		return nil, net.ErrClosed
 	default:
 	}
-	select {
-	case h.writeCh <- req:
-		return req.done, nil
-	case <-h.draining:
-		return nil, net.ErrClosed
-	case <-h.Ctx.Done():
-		return nil, h.Ctx.Err()
-	case <-stop:
-		return nil, net.ErrClosed
+	req := &writeRequest{data: NewPacket(cmd, id, data).Encode(), id: id}
+	if confirmed {
+		req.done = make(chan error, 1)
 	}
+	if cmd == CmdData {
+		// sendMu permits only one pending DATA per stream. FIFO admission gives
+		// ready streams a turn before a producer can submit its next frame.
+		if len(h.data) >= h.flow.MaxStreams {
+			return nil, ErrCapacity
+		}
+		h.data = append(h.data, req)
+	} else {
+		if len(h.controls) >= h.flow.ControlSlots {
+			h.Cancel()
+			return nil, ErrCapacity
+		}
+		h.controls = append(h.controls, req)
+	}
+	h.signalWriter()
+	return req.done, nil
 }
 
-// Control records retain asynchronous admission so the shared receiver never
-// waits on a peer that may itself be sending. Drain reports their final result.
+// Credit has one coalescing slot per stream, never an unbounded goroutine or
+// a blocking send from the shared receiver/application reader.
+func (h *BaseHandler) queueCredit(id uuid.UUID, consumed uint64) {
+	h.queueMu.Lock()
+	defer h.queueMu.Unlock()
+	select {
+	case <-h.draining:
+		return
+	case <-h.Ctx.Done():
+		return
+	default:
+	}
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, consumed)
+	if req := h.credits[id]; req != nil {
+		req.data = NewPacket(CmdCredit, id, b).Encode()
+		return
+	}
+	if len(h.controls) >= h.flow.ControlSlots {
+		h.Cancel()
+		return
+	}
+	req := &writeRequest{data: NewPacket(CmdCredit, id, b).Encode(), id: id, credit: true}
+	h.credits[id] = req
+	h.controls = append(h.controls, req)
+	h.signalWriter()
+}
+
 func (h *BaseHandler) sendPacket(cmd byte, id uuid.UUID, data []byte) byte {
 	if _, err := h.enqueue(cmd, id, data, nil, false); err != nil {
 		return ErrHandlerStopped
 	}
 	return ErrNone
 }
-
 func (h *BaseHandler) sendConfirmed(cmd byte, id uuid.UUID, data []byte, stop <-chan struct{}) error {
 	done, err := h.enqueue(cmd, id, data, stop, true)
 	if err != nil {
@@ -70,11 +112,37 @@ func (h *BaseHandler) sendConfirmed(cmd byte, id uuid.UUID, data []byte, stop <-
 	}
 }
 
-func (h *BaseHandler) sendData(id uuid.UUID, data []byte, stop <-chan struct{}) error {
-	if _, ok := h.Connections.Load(id); !ok {
-		return net.ErrClosed
+func (h *BaseHandler) sendBytes(id uuid.UUID, data []byte, stop <-chan struct{}) (int, error) {
+	v, ok := h.Connections.Load(id)
+	if !ok {
+		return 0, net.ErrClosed
 	}
-	return h.sendConfirmed(CmdData, id, data, stop)
+	c := v.(*Connection)
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendEnded {
+		return 0, io.ErrClosedPipe
+	}
+	n := 0
+	for len(data) > 0 {
+		select {
+		case <-c.Closed:
+			return n, net.ErrClosed
+		case <-h.Ctx.Done():
+			return n, h.Ctx.Err()
+		default:
+		}
+		size, err := c.acquireCredit(min(len(data), h.flow.DataFrame), stop)
+		if err != nil {
+			return n, err
+		}
+		if err = h.sendConfirmed(CmdData, id, data[:size], c.Closed); err != nil {
+			return n, err
+		}
+		n += size
+		data = data[size:]
+	}
+	return n, nil
 }
 
 // writeAll advances only by the transport's reported count. Never replay an
@@ -98,30 +166,52 @@ func writeAll(w io.Writer, data []byte) error {
 
 func (h *BaseHandler) writeLoop() {
 	defer close(h.writerDone)
+	controlRun := 0
 	for {
-		var first writeRequest
-		var ok bool
-		select {
-		case <-h.Ctx.Done():
-			return
-		case first, ok = <-h.writeCh:
-			if !ok {
-				return
+		h.queueMu.Lock()
+		batch := make([]*writeRequest, 0, 16)
+		buf := make([]byte, 0, h.flow.BatchBytes)
+		started := time.Now()
+		for len(h.controls)+len(h.data) > 0 && time.Since(started) < time.Millisecond {
+			control := len(h.controls) > 0 && (controlRun < 8 || len(h.data) == 0)
+			queue := &h.data
+			if control {
+				queue = &h.controls
 			}
+			req := (*queue)[0]
+			if len(buf)+len(req.data) > h.flow.BatchBytes {
+				break
+			}
+			(*queue)[0] = nil
+			*queue = (*queue)[1:]
+			if req.credit {
+				delete(h.credits, req.id)
+			}
+			if control {
+				controlRun++
+			} else {
+				controlRun = 0
+			}
+			batch = append(batch, req)
+			buf = append(buf, req.data...)
 		}
-		batch := []writeRequest{first}
-		buf := append([]byte(nil), first.data...)
-	collect:
-		for {
-			select {
-			case more, open := <-h.writeCh:
-				if !open {
-					break collect
+		empty := len(h.controls)+len(h.data) == 0
+		h.queueMu.Unlock()
+		if len(batch) == 0 {
+			if empty {
+				select {
+				case <-h.draining:
+					return
+				default:
 				}
-				batch = append(batch, more)
-				buf = append(buf, more.data...)
-			default:
-				break collect
+			}
+			select {
+			case <-h.Ctx.Done():
+				return
+			case <-h.wake:
+				continue
+			case <-h.draining:
+				continue
 			}
 		}
 		err := writeAll(h.conn, buf)
@@ -139,6 +229,11 @@ func (h *BaseHandler) writeLoop() {
 			h.Cancel()
 			return
 		}
+		select {
+		case <-h.Ctx.Done():
+			return
+		default:
+		}
 	}
 }
 
@@ -148,9 +243,7 @@ func (h *BaseHandler) writeLoop() {
 func (h *BaseHandler) Drain(ctx context.Context) error {
 	h.drainOnce.Do(func() {
 		close(h.draining)
-		h.admissionMu.Lock()
-		close(h.writeCh)
-		h.admissionMu.Unlock()
+		h.signalWriter()
 	})
 	select {
 	case <-h.writerDone:

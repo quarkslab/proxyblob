@@ -33,10 +33,21 @@ type ProxyServer struct {
 // NewProxyServer creates a proxy server instance with the given connection.
 // The connection is used for communication with remote agents.
 func NewProxyServer(ctx context.Context, conn net.Conn) *ProxyServer {
-	server := &ProxyServer{}
-	server.BaseHandler = protocol.NewBaseHandler(ctx, conn)
-	server.PacketHandler = server
+	server, err := NewProxyServerWithConfig(ctx, conn, protocol.DefaultFlowConfig())
+	if err != nil {
+		panic(err)
+	}
 	return server
+}
+
+func NewProxyServerWithConfig(ctx context.Context, conn net.Conn, cfg protocol.FlowConfig) (*ProxyServer, error) {
+	base, err := protocol.NewBaseHandlerWithConfig(ctx, conn, cfg)
+	if err != nil {
+		return nil, err
+	}
+	server := &ProxyServer{BaseHandler: base}
+	server.PacketHandler = server
+	return server, nil
 }
 
 // Start begins listening for client connections on the specified address.
@@ -149,9 +160,8 @@ func (s *ProxyServer) OnData(connectionID uuid.UUID, data []byte) byte {
 		return protocol.ErrInvalidState
 	}
 
-	// Deliver blocks until the payload is accepted by the per-connection
-	// goroutine, so back-pressure never discards data. A false return means the
-	// connection is closed or the handler is shutting down.
+	// Delivery uses reserved memory and never blocks shared dispatch. The
+	// sender must pause before exhausting its negotiated receive credit.
 	if !conn.Deliver(data) {
 		return protocol.ErrConnectionClosed
 	}
@@ -237,13 +247,17 @@ func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Con
 		return
 	}
 	proxyConn.AttachDestination(clientConn)
-	s.Connections.Store(proxyConn.ID, proxyConn)
+	if err := s.RegisterConnection(proxyConn); err != nil {
+		s.lifecycleMu.Unlock()
+		proxyConn.Close()
+		return
+	}
 	s.lifecycleMu.Unlock()
 
 	// 1. Initiate connection with the agent
 	errCode := s.SendNewConnection(connID)
 	if errCode != protocol.ErrNone {
-		s.Connections.Delete(connID)
+		proxyConn.Close()
 		return
 	}
 
