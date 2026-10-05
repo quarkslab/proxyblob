@@ -127,6 +127,36 @@ stream. The 5-second drain allowance exceeds measured exchanges while bounding
 cleanup; it remains configurable for real storage latency. These defaults
 remain subject to separate storage measurement work.
 
+## Historical throughput regression: merge gate
+
+The initial comparison above used main after PR #13. It therefore missed a
+larger regression introduced by synchronous per-DATA transport confirmation.
+A subsequent identical fixed-length SOCKS exchange (1 MiB request plus 1 MiB
+response, verified byte-for-byte, 50 ms added per transport Write) measured:
+
+| Revision | Elapsed | Transport writes |
+| --- | ---: | ---: |
+| Before receive-buffer reduction (`334be3f`) | 0.581 s | 11 |
+| Before synchronous confirmation (`2cf9f29`) | 0.579 s | 11 |
+| After confirmation (`af282d6`) | 3.644 s | 71 |
+| Current flow-control data path (`952d741`) | 3.845 s | 137, including credit |
+
+Before #13, a producer queued more data during an upload, allowing batches
+approaching 1 MiB in this probe. After #13, each 32-KiB copy waits for its
+transport write before admitting the next copy, preventing single-stream
+batching. Disabling only that confirmation wait in a disposable `af282d6`
+checkout restored 0.577 s / 11 writes; the diagnostic edit was then reverted.
+The receive-buffer change showed no corresponding regression in this probe.
+These results isolate a mechanism under simulated storage cost, not actual
+Azure throughput or billing.
+
+**Hold merge for a bounded-pipelining correction.** The earlier frame/credit
+fix removes the extra regression from this ticket, but does not restore
+pre-#13 single-stream throughput. The correction must allow bounded data to
+accumulate while storage is writing, retain credit-backed receive reservations,
+and preserve confirmed draining, write errors and ordered EOF. Simply removing
+confirmation would abandon integrity guarantees and is not the shipped fix.
+
 ## Rollout and validation scope
 
 Drain existing tunnels before deploying matching proxy/agent binaries. Mixed
