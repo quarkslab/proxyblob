@@ -342,3 +342,35 @@ func TestForwardFailureUnblocksOtherDirection(t *testing.T) {
 		}
 	})
 }
+
+func TestPeerCloseForcesUnreadDrainWithError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := NewBaseHandler(context.Background(), &shortConn{limit: 1 << 20})
+		defer h.Abort()
+		c := NewConnection(uuid.New(), h.Ctx.Done())
+		pc := NewProtocolConn(h.Ctx, c.ID, h)
+		c.SetProtocolConn(pc)
+		c.StartDelivery()
+		h.Connections.Store(c.ID, c)
+		for i := 0; i < 1500; i++ {
+			if !c.Deliver([]byte("unread")) {
+				t.Fatal("delivery rejected")
+			}
+		}
+		synctest.Wait()
+		start := time.Now()
+		if code := h.PeerClose(c.ID, ErrNone); code != ErrNone {
+			t.Fatalf("PeerClose: %d", code)
+		}
+		<-c.Closed
+		if elapsed := time.Since(start); elapsed != DrainTimeout {
+			t.Fatalf("forced after %v, want %v", elapsed, DrainTimeout)
+		}
+		if n, err := pc.Read(make([]byte, 32)); n != 0 || !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("discarded bytes exposed as clean EOF: %d %v", n, err)
+		}
+		if _, ok := h.Connections.Load(c.ID); ok {
+			t.Fatal("forced stream retained")
+		}
+	})
+}

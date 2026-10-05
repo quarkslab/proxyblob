@@ -32,13 +32,15 @@ type jsChunk struct {
 }
 
 type jsConn struct {
-	socket    js.Value
-	pr        *io.PipeReader
-	pw        *io.PipeWriter
-	inbox     chan jsChunk
-	closed    chan struct{}
-	downOnce  sync.Once // guards close(closed) + pw teardown
-	closeOnce sync.Once // guards the pr / JS socket teardown done by Close
+	writeMu    sync.Mutex
+	writeEnded bool
+	socket     js.Value
+	pr         *io.PipeReader
+	pw         *io.PipeWriter
+	inbox      chan jsChunk
+	closed     chan struct{}
+	downOnce   sync.Once // guards close(closed) + pw teardown
+	closeOnce  sync.Once // guards the pr / JS socket teardown done by Close
 }
 
 func dialTCP(target string) (net.Conn, error) {
@@ -148,7 +150,7 @@ func (c *jsConn) writeLoop() {
 			if chunk.eof {
 				// Everything enqueued before this marker has been written, so
 				// reporting EOF now cannot truncate the stream.
-				c.shutdown(io.EOF)
+				c.pw.Close()
 				return
 			}
 			if _, err := c.pw.Write(chunk.data); err != nil {
@@ -176,6 +178,11 @@ func (c *jsConn) shutdown(err error) {
 func (c *jsConn) Read(b []byte) (int, error) { return c.pr.Read(b) }
 
 func (c *jsConn) Write(b []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.writeEnded {
+		return 0, io.ErrClosedPipe
+	}
 	select {
 	case <-c.closed:
 		return 0, net.ErrClosed
@@ -183,8 +190,20 @@ func (c *jsConn) Write(b []byte) (int, error) {
 	}
 	jsData := js.Global().Get("Uint8Array").New(len(b))
 	js.CopyBytesToJS(jsData, b)
-	c.socket.Call("write", jsData)
-	return len(b), nil
+	// The coordinated host must return the accepted byte count. An absent
+	// count cannot truthfully be translated into successful delivery.
+	result := c.socket.Call("write", jsData)
+	if result.Type() != js.TypeNumber {
+		return 0, errors.ErrUnsupported
+	}
+	n := result.Int()
+	if n < 0 || n > len(b) {
+		return 0, io.ErrShortWrite
+	}
+	if n < len(b) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
 }
 
 func (c *jsConn) Close() error {
@@ -193,7 +212,12 @@ func (c *jsConn) Close() error {
 	c.shutdown(net.ErrClosed)
 	c.closeOnce.Do(func() {
 		c.pr.CloseWithError(net.ErrClosed)
-		c.socket.Call("end")
+		c.writeMu.Lock()
+		defer c.writeMu.Unlock()
+		if !c.writeEnded {
+			c.writeEnded = true
+			c.socket.Call("end")
+		}
 	})
 	return nil
 }
@@ -205,12 +229,20 @@ func (c *jsConn) SetReadDeadline(t time.Time) error  { return errors.ErrUnsuppor
 func (c *jsConn) SetWriteDeadline(t time.Time) error { return errors.ErrUnsupported }
 
 // CloseWrite preserves the read side while asking the JS host to send FIN.
+// TCPDial's host must keep reads alive after socket.end(), and report peer
+// FIN through onClose without disabling writes (half-open TCP semantics).
 func (c *jsConn) CloseWrite() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.writeEnded {
+		return nil
+	}
 	select {
 	case <-c.closed:
 		return net.ErrClosed
 	default:
 	}
+	c.writeEnded = true
 	c.socket.Call("end")
 	return nil
 }
