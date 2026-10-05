@@ -61,7 +61,9 @@ func (h *SocksHandler) OnNew(connectionID uuid.UUID, data []byte) byte {
 	}
 
 	// Create the virtual protocol connection
-	conn.SetProtocolConn(protocol.NewProtocolConn(h.Ctx, connectionID, h.BaseHandler))
+	if !conn.SetProtocolConn(protocol.NewProtocolConn(h.Ctx, connectionID, h.BaseHandler)) {
+		return protocol.ErrConnectionClosed
+	}
 	conn.StartDelivery()
 
 	// Send ACK and process in a goroutine so ReceiveLoop never blocks on aznet writes
