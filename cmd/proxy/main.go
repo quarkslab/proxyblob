@@ -958,13 +958,14 @@ func AddCommands(app *grumble.App) {
 
 			agent := val.(*AgentConnection)
 
-			if err := agent.close(); err != nil {
-				return err
-			}
-
+			// Selection follows local removal even when remote cleanup fails.
 			if selectedAgent == agentID {
 				selectedAgent = ""
 				c.App.SetPrompt("proxyblob » ")
+			}
+
+			if err := agent.close(); err != nil {
+				return err
 			}
 
 			log.Info().Str("agent_id", agentID).Msg("Agent disconnected")

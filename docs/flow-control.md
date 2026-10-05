@@ -166,3 +166,18 @@ is separate dependency integration work. Native flow regressions and WASM builds
 do not establish production JS-host or live Azure behavior. UDP overload policy,
 JS buffer/callback cleanup, organization, and final release validation remain
 separate work.
+
+### Explicit agent removal
+
+`agent rm` clears the local selection even if session cleanup returns an error.
+Protocol abort first interrupts transport I/O. Session cleanup waits for the
+protocol writer to exit before replacing its expired write deadline with a
+finite shutdown deadline, allowing aznet to submit FIN without resuming an
+interrupted protocol write. Ordinary cancellation does not produce a drain
+warning; actual drain deadlines and transport failures remain visible.
+
+The removal regression uses the selected aznet implementation and a fake raw
+storage driver, and checks decrypted FIN submission under concurrent close.
+It does not establish remote process exit over Azure. Live Blob removal and
+remote termination remain rollout checks; transport Close is bounded and may
+still report genuine delivery or cleanup failure.

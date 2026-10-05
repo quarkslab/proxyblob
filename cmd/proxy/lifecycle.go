@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"proxyblob/pkg/protocol"
+
 	"github.com/atsika/aznet"
 	"github.com/rs/zerolog/log"
 )
@@ -113,7 +115,19 @@ func (a *AgentConnection) close() error {
 		}
 		runningProxies.Delete(a.ID)
 		a.mu.Unlock()
-		a.closeErr = a.Conn.Close()
+		// Abort expires transport I/O to release the protocol goroutines. Wait
+		// for its writer before replacing that deadline: aznet.Close must be
+		// able to send its FIN, but no interrupted DATA write may resume.
+		if a.server != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), protocol.DrainTimeout)
+			if err := a.server.WaitWriter(ctx); err != nil {
+				a.closeErr = err
+			} else {
+				a.closeErr = a.Conn.SetWriteDeadline(time.Now().Add(protocol.DrainTimeout))
+			}
+			cancel()
+		}
+		a.closeErr = errors.Join(a.closeErr, a.Conn.Close())
 		connectedAgents.CompareAndDelete(a.ID, a)
 	})
 	return a.closeErr

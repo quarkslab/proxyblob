@@ -408,18 +408,32 @@ func (h *BaseHandler) drainReceived(readErr error) {
 	select {
 	case <-done:
 		if h.writerDone != nil {
-			if err := h.Drain(ctx); err != nil {
+			if err := h.Drain(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Warn().Err(err).Msg("Tunnel write drain failed")
 			}
 		}
 	case <-ctx.Done():
-		log.Warn().Err(ctx.Err()).Msg("Tunnel delivery drain forced to abort")
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			log.Warn().Err(ctx.Err()).Msg("Tunnel delivery drain forced to abort")
+		}
 	}
 }
 
 // Abort stops admission and interrupts pending I/O. Session Close remains with
 // the listener/agent owner; the transport deadline releases its reader/writer.
 func (h *BaseHandler) Abort() { h.Cancel(); <-h.abortDone }
+
+// WaitWriter waits for the sole transport writer to exit. After Abort and a
+// successful wait, the session owner may replace the abort write deadline for
+// transport-level shutdown without reviving an interrupted protocol write.
+func (h *BaseHandler) WaitWriter(ctx context.Context) error {
+	select {
+	case <-h.writerDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // PeerClose is a full-stream graceful close or an explicit failure. Unlike
 // directional EOF, full close bounds the time allowed for application draining.
