@@ -388,6 +388,7 @@ func acceptAgentLoop(ctx context.Context, listenerID string, state *ListenerStat
 		}
 		connectedAgents.Store(agent.ID, agent)
 		state.mu.Unlock()
+		log.Info().Str("agent_id", agent.ID).Str("info", info).Str("listener_id", listenerID).Msg("Agent connected")
 		// Read the session even before SOCKS starts: this consumes heartbeats and
 		// detects disconnect without a competing reader or an idle-agent timer.
 		agent.server.StartReceiving()
