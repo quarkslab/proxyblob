@@ -31,6 +31,9 @@ func (d *contractDriver) GetHandshakes(ctx context.Context) ([]aznet.Handshake, 
 	return nil, ctx.Err()
 }
 func (d *contractDriver) CleanupBootstrap(context.Context) error { d.cleanup.Add(1); return nil }
+func (d *contractDriver) CreateBootstrapTokensFor(time.Duration) (string, string, error) {
+	return d.CreateBootstrapTokens()
+}
 func (d *contractDriver) CreateBootstrapTokens() (string, string, error) {
 	return "handshake-sas", "token-sas", nil
 }

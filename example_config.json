@@ -3,6 +3,7 @@
     {
       "name": "blob-listener",
       "driver": "azblob",
+      "session_duration": "24h",
       "address": "https://proxyblob.blob.core.windows.net",
       "storage_account": "proxyblob",
       "storage_account_key": "your_account_key"
@@ -10,6 +11,7 @@
     {
       "name": "queue-listener",
       "driver": "azqueue",
+      "session_duration": "24h",
       "address": "http://127.0.0.1:10001",
       "storage_account": "devstoreaccount1",
       "storage_account_key": "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
