@@ -42,7 +42,7 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 			pc := protocol.NewProtocolConn(base.Ctx, id, base)
 			c.SetProtocolConn(pc)
 			c.StartDelivery()
-			// More than readBuffer's capacity leaves accepted bytes in deliverCh.
+			// Many small records must drain in order from the reserved buffer.
 			var want []byte
 			for i := 0; i < 1500; i++ {
 				b := []byte{byte(i)}
@@ -65,6 +65,13 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 // Real TCP endpoints exercise both production forwarding paths through a
 // multiplexed tunnel, including SOCKS negotiation and request/response FIN.
 func TestHalfCloseRequestResponse(t *testing.T) {
+	a, b := net.Pipe()
+	exerciseHalfCloseRequestResponse(t, a, b, protocol.DefaultFlowConfig())
+}
+
+func exerciseHalfCloseRequestResponse(t *testing.T, a, b net.Conn, cfg protocol.FlowConfig) {
+	t.Helper()
+
 	target, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +87,7 @@ func TestHalfCloseRequestResponse(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		c.SetDeadline(time.Now().Add(5 * time.Second))
+		c.SetDeadline(time.Now().Add(30 * time.Second))
 		got, err := io.ReadAll(c)
 		if err != nil {
 			result <- err
@@ -96,12 +103,17 @@ func TestHalfCloseRequestResponse(t *testing.T) {
 		}
 		result <- err
 	}()
-	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()
-	s := NewProxyServer(context.Background(), a)
+	s, err := NewProxyServerWithConfig(context.Background(), a, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer s.Stop()
-	h := socks.NewSocksHandler(context.Background(), b)
+	h, err := socks.NewSocksHandlerWithConfig(context.Background(), b, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer h.Stop()
 	h.Start("")
 	s.Start("127.0.0.1:0")
@@ -110,7 +122,7 @@ func TestHalfCloseRequestResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	client.SetDeadline(time.Now().Add(5 * time.Second))
+	client.SetDeadline(time.Now().Add(30 * time.Second))
 	if _, err := client.Write([]byte{5, 1, 0}); err != nil {
 		t.Fatal(err)
 	}

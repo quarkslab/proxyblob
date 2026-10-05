@@ -23,6 +23,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"proxyblob/pkg/protocol"
 	proxy "proxyblob/pkg/proxy/server"
 
 	"github.com/atsika/aznet"
@@ -366,7 +367,17 @@ func acceptAgentLoop(ctx context.Context, listenerID string, state *ListenerStat
 		agent := &AgentConnection{ID: uuid.NewString(), Conn: conn, ListenerID: listenerID,
 			Info: info, CreatedAt: time.Now(), generation: state}
 		agent.setLastSeen(agent.CreatedAt)
-		agent.server = proxy.NewProxyServer(ctx, conn)
+		cfg, err := protocol.FlowConfigFromEnv()
+		if err != nil {
+			log.Error().Err(err).Msg("Invalid flow limits")
+			conn.Close()
+			continue
+		}
+		agent.server, err = proxy.NewProxyServerWithConfig(ctx, conn, cfg)
+		if err != nil {
+			conn.Close()
+			continue
+		}
 		agent.server.OnReceive = func() { agent.setLastSeen(time.Now()) }
 		// Publication and the stopping transition share the generation lock.
 		state.mu.Lock()
@@ -377,6 +388,7 @@ func acceptAgentLoop(ctx context.Context, listenerID string, state *ListenerStat
 		}
 		connectedAgents.Store(agent.ID, agent)
 		state.mu.Unlock()
+		log.Info().Str("agent_id", agent.ID).Str("info", info).Str("listener_id", listenerID).Msg("Agent connected")
 		// Read the session even before SOCKS starts: this consumes heartbeats and
 		// detects disconnect without a competing reader or an idle-agent timer.
 		agent.server.StartReceiving()
@@ -946,13 +958,14 @@ func AddCommands(app *grumble.App) {
 
 			agent := val.(*AgentConnection)
 
-			if err := agent.close(); err != nil {
-				return err
-			}
-
+			// Selection follows local removal even when remote cleanup fails.
 			if selectedAgent == agentID {
 				selectedAgent = ""
 				c.App.SetPrompt("proxyblob » ")
+			}
+
+			if err := agent.close(); err != nil {
+				return err
 			}
 
 			log.Info().Str("agent_id", agentID).Msg("Agent disconnected")
