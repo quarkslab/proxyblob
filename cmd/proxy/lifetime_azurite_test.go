@@ -46,6 +46,7 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 					}
 					listeners.Delete(id)
 				}()
+				var firstExpiry time.Time
 				for _, bootstrap := range []time.Duration{time.Hour, 7 * 24 * time.Hour} {
 					before := time.Now().Truncate(time.Second)
 					credential, err := GenerateConnectionString(id, bootstrap)
@@ -105,9 +106,23 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 					if !strings.Contains(RenderAgentTable(ListAgents(), expiry.Add(-30*time.Minute)), "30m0s") {
 						t.Fatal("session metadata missing from display")
 					}
-					if err := conn.Close(); err != nil {
-						t.Fatal(err)
+					if firstExpiry.IsZero() {
+						firstExpiry = expiry
+					} else {
+						foundFirst := false
+						for _, a := range ListAgents() {
+							if a.ListenerID == id && a.SessionExpiry.Equal(firstExpiry) {
+								foundFirst = true
+							}
+						}
+						if !foundFirst {
+							t.Fatal("bootstrap issuance changed or removed the existing session")
+						}
 					}
+				}
+				// Stop the server while peers remain connected; deferred client closes follow.
+				if err := StopListener(id); err != nil {
+					t.Fatal(err)
 				}
 			})
 		}
