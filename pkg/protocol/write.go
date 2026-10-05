@@ -172,7 +172,7 @@ func (h *BaseHandler) writeLoop() {
 		batch := make([]*writeRequest, 0, 16)
 		buf := make([]byte, 0, h.flow.BatchBytes)
 		started := time.Now()
-		for len(h.controls)+len(h.data) > 0 && time.Since(started) < time.Millisecond {
+		for len(h.controls)+len(h.data) > 0 && (len(batch) == 0 || time.Since(started) < time.Millisecond) {
 			control := len(h.controls) > 0 && (controlRun < 8 || len(h.data) == 0)
 			queue := &h.data
 			if control {

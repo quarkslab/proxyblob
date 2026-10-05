@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 
@@ -53,6 +54,11 @@ func (h *flowHandler) OnClose(id uuid.UUID, code byte) byte { return h.PeerClose
 func flowPair(t testing.TB, cfg FlowConfig) (*flowHandler, *flowHandler) {
 	t.Helper()
 	a, b := net.Pipe()
+	return flowPairOn(t, cfg, a, b)
+}
+
+func flowPairOn(t testing.TB, cfg FlowConfig, a, b net.Conn) (*flowHandler, *flowHandler) {
+	t.Helper()
 	makeHandler := func(c net.Conn) *flowHandler {
 		base, err := NewBaseHandlerWithConfig(context.Background(), c, cfg)
 		if err != nil {
@@ -487,5 +493,92 @@ func TestReceiveStorageBound(t *testing.T) {
 	}
 	if accepted > 64<<10 {
 		t.Fatalf("stalled stream retained %d bytes, limit 65536", accepted)
+	}
+}
+
+type observedConn struct {
+	net.Conn
+	maximum atomic.Int64
+}
+
+func (c *observedConn) Write(p []byte) (int, error) {
+	for old := c.maximum.Load(); int64(len(p)) > old; old = c.maximum.Load() {
+		if c.maximum.CompareAndSwap(old, int64(len(p))) {
+			break
+		}
+	}
+	return c.Conn.Write(p)
+}
+func TestFlowSustainedProducersKeepHealthyControlMoving(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		left, right := net.Pipe()
+		wire := &observedConn{Conn: left}
+		cfg := tinyFlow()
+		a, b := flowPairOn(t, cfg, wire, right)
+		writers, readers := make([]*ProtocolConn, 3), make([]*ProtocolConn, 3)
+		results := make(chan error, 6)
+		payload := bytes.Repeat([]byte("sustained"), 1000)
+		for i := range writers {
+			writers[i], readers[i] = openFlow(t, a, b)
+			go func() {
+				_, err := writers[i].Write(payload)
+				if err == nil {
+					err = writers[i].CloseWrite()
+				}
+				results <- err
+			}()
+		}
+		synctest.Wait() // All producers have filled their initial credit.
+		for i := range readers {
+			go func() {
+				got, err := io.ReadAll(readers[i])
+				if err == nil && !bytes.Equal(got, payload) {
+					err = io.ErrUnexpectedEOF
+				}
+				results <- err
+			}()
+		}
+		healthy, peer := openFlow(t, a, b) // ACK must progress while DATA continuously requeues.
+		for i := 0; i < 20; i++ {
+			if _, err := healthy.Write([]byte{byte(i)}); err != nil {
+				t.Fatal(err)
+			}
+			var got [1]byte
+			if _, err := io.ReadFull(peer, got[:]); err != nil || got[0] != byte(i) {
+				t.Fatalf("healthy transfer %d: %v", i, err)
+			}
+		}
+		if err := healthy.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := peer.Read(make([]byte, 1)); err != io.EOF {
+			t.Fatalf("healthy FIN: %v", err)
+		}
+		for i := 0; i < 6; i++ {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if maximum := wire.maximum.Load(); maximum > int64(cfg.BatchBytes) {
+			t.Fatalf("sustained batch exceeded limit: %d", maximum)
+		}
+	})
+}
+
+func TestFlowRegistrationRacesAbort(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		h := NewBaseHandler(context.Background(), &shortConn{limit: 1 << 20})
+		c := NewConnection(uuid.New(), h.Ctx.Done())
+		var wg sync.WaitGroup
+		wg.Go(func() { h.RegisterConnection(c) })
+		wg.Go(func() { h.Abort() })
+		wg.Wait()
+		h.flowMu.Lock()
+		reserved := h.reserved
+		h.flowMu.Unlock()
+		if reserved != 0 {
+			t.Fatalf("reservation survived cancellation: %d", reserved)
+		}
+		h.Connections.Range(func(_, _ any) bool { t.Error("stream published after abort"); return true })
 	}
 }

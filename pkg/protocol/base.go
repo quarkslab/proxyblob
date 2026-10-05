@@ -358,12 +358,20 @@ func (h *BaseHandler) SendClose(connectionID uuid.UUID, errCode byte) byte {
 }
 
 func (h *BaseHandler) CloseAllConnections() {
-	h.Connections.Range(func(key, value interface{}) bool {
-		conn := value.(*Connection)
-		conn.Close()
-		h.Connections.Delete(key)
+	// Snapshot under the admission lock. Once cancellation is visible, a new
+	// registration either belongs to this snapshot or is rejected; it cannot
+	// publish after the cancellation worker has finished cleanup.
+	h.flowMu.Lock()
+	var connections []*Connection
+	h.Connections.Range(func(_, value any) bool {
+		connections = append(connections, value.(*Connection))
 		return true
 	})
+	h.flowMu.Unlock()
+	for _, c := range connections {
+		c.Close()
+		h.Connections.CompareAndDelete(c.ID, c)
+	}
 }
 
 // FinishConnection preserves all accepted incoming bytes before exposing EOF.
