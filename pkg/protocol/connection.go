@@ -102,6 +102,7 @@ func (c *Connection) Close() byte {
 		h := c.handler
 		c.deliveryMu.Unlock()
 		if h != nil {
+			h.discardData(c.ID)
 			h.releaseReservation(c)
 		}
 	})

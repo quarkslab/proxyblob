@@ -491,8 +491,8 @@ func TestReceiveStorageBound(t *testing.T) {
 		}
 		accepted += len(payload)
 	}
-	if accepted > 64<<10 {
-		t.Fatalf("stalled stream retained %d bytes, limit 65536", accepted)
+	if accepted > DefaultFlowConfig().StreamWindow {
+		t.Fatalf("stalled stream retained %d bytes, limit %d", accepted, DefaultFlowConfig().StreamWindow)
 	}
 }
 

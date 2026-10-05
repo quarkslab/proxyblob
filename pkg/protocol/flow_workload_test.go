@@ -21,7 +21,7 @@ func TestFlowWorkloads(t *testing.T) {
 	if os.Getenv("PROXYBLOB_MEASURE") == "" {
 		t.Skip("set PROXYBLOB_MEASURE=1 for workload measurements")
 	}
-	window := 64 << 10
+	window := DefaultFlowConfig().StreamWindow
 	if s := os.Getenv("PROXYBLOB_MEASURE_WINDOW"); s != "" {
 		var err error
 		window, err = strconv.Atoi(s)
@@ -75,7 +75,7 @@ func TestFlowWorkloads(t *testing.T) {
 						continue
 					}
 					if mode == "slow" && i < concurrency-1 {
-						wg.Go(func() { writers[i].Write(make([]byte, window*2)) })
+						wg.Go(func() { writers[i].copyFrom(&workloadSource{Reader: bytes.NewReader(make([]byte, window*2))}) })
 						continue
 					}
 					wg.Go(func() {
@@ -106,7 +106,7 @@ func TestFlowWorkloads(t *testing.T) {
 						}()
 						for r := 0; r < rounds; r++ {
 							begin := time.Now()
-							if _, err := writers[i].Write(payload); err != nil {
+							if _, err := writers[i].copyFrom(&workloadSource{Reader: bytes.NewReader(payload)}); err != nil {
 								t.Error(err)
 								break
 							}
@@ -198,7 +198,7 @@ func TestFlowStorageLatency(t *testing.T) {
 				for i := range writers {
 					payload := bytes.Repeat([]byte{byte(i)}, 256<<10)
 					go func() {
-						_, err := writers[i].Write(payload)
+						_, err := writers[i].copyFrom(&workloadSource{Reader: bytes.NewReader(payload)})
 						if err == nil {
 							err = writers[i].CloseWrite()
 						}
@@ -222,3 +222,12 @@ func TestFlowStorageLatency(t *testing.T) {
 		}
 	}
 }
+
+// A finite source exercises the same bounded pipeline used by TCP Forward.
+type workloadSource struct {
+	net.Conn
+	Reader *bytes.Reader
+}
+
+func (s *workloadSource) Read(p []byte) (int, error) { return s.Reader.Read(p) }
+func (s *workloadSource) Close() error               { return nil }

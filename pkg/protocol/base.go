@@ -46,19 +46,24 @@ type BaseHandler struct {
 	conn net.Conn
 
 	// The writer owns bounded DATA and control queues.
-	queueMu           sync.Mutex
-	controls, data    []*writeRequest
-	credits           map[uuid.UUID]*writeRequest
-	wake              chan struct{}
-	flow              FlowConfig
-	flowMu            sync.Mutex
-	reserved, streams int
-	drainOnce         sync.Once
-	draining          chan struct{}
-	writerDone        chan struct{}
-	abortDone         chan struct{}
-	writeErrMu        sync.Mutex
-	writeErr          error
+	queueMu                sync.Mutex
+	controls               []*writeRequest
+	data                   map[uuid.UUID][]*writeRequest
+	dataReady              []uuid.UUID
+	pendingData            map[uuid.UUID]dataReservation
+	dataBytes, dataRecords int
+	dataSpace              chan struct{}
+	credits                map[uuid.UUID]*writeRequest
+	wake                   chan struct{}
+	flow                   FlowConfig
+	flowMu                 sync.Mutex
+	reserved, streams      int
+	drainOnce              sync.Once
+	draining               chan struct{}
+	writerDone             chan struct{}
+	abortDone              chan struct{}
+	writeErrMu             sync.Mutex
+	writeErr               error
 
 	// Connections maps UUIDs to active Connection objects
 	Connections sync.Map
@@ -95,15 +100,18 @@ func NewBaseHandlerWithConfig(parentCtx context.Context, conn net.Conn, cfg Flow
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	h := &BaseHandler{
-		conn:       conn,
-		flow:       cfg,
-		wake:       make(chan struct{}, 1),
-		credits:    make(map[uuid.UUID]*writeRequest),
-		draining:   make(chan struct{}),
-		writerDone: make(chan struct{}),
-		abortDone:  make(chan struct{}),
-		Ctx:        ctx,
-		Cancel:     cancel,
+		conn:        conn,
+		flow:        cfg,
+		wake:        make(chan struct{}, 1),
+		credits:     make(map[uuid.UUID]*writeRequest),
+		pendingData: make(map[uuid.UUID]dataReservation),
+		data:        make(map[uuid.UUID][]*writeRequest),
+		dataSpace:   make(chan struct{}),
+		draining:    make(chan struct{}),
+		writerDone:  make(chan struct{}),
+		abortDone:   make(chan struct{}),
+		Ctx:         ctx,
+		Cancel:      cancel,
 	}
 	go h.writeLoop()
 	go func() {

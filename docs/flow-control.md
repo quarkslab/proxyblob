@@ -30,9 +30,12 @@ and reports forced abort as an error, not clean EOF.
 
 ## Scheduling and limits
 
-A stream has at most one pending DATA frame. FIFO admission, followed by waiting
-for the batch's transport result, places sustained producers behind other ready
-streams. Control records use separate bounded capacity. Credit updates coalesce to one pending record per stream. Small reads accumulate
+TCP forwarding pipelines socket reads while storage writes are pending. DATA
+queues rotate round-robin between ready streams, preserving each stream's byte
+order. Direct `ProtocolConn.Write` remains transport-confirmed. Forwarding
+reports success only after its final DATA record is confirmed, before sending
+EOF; a late upload failure interrupts even an idle source socket. Cancellation
+discards unsent DATA before CLOSE. Control records use separate bounded capacity. Credit updates coalesce to one pending record per stream. Small reads accumulate
 until half the window is released, or the advertised grant has been fully
 received. The exhausted-grant case flushes even one released byte, both when
 Read consumes data and when the last in-flight DATA arrives; a zero-credit
@@ -51,23 +54,31 @@ use Go syntax. Invalid or internally inconsistent limits are rejected.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `PROXYBLOB_STREAM_WINDOW` | 65536 | Receive bytes reserved per stream/direction |
-| `PROXYBLOB_TUNNEL_WINDOW` | 8388608 | Receive reservation budget per endpoint/tunnel |
+| `PROXYBLOB_STREAM_WINDOW` | 524288 | Receive reservation and separate outgoing payload cap per stream |
+| `PROXYBLOB_TUNNEL_WINDOW` | 67108864 | Receive budget and separate outgoing payload budget per endpoint |
 | `PROXYBLOB_MAX_STREAMS` | 128 | Concurrent admitted streams |
 | `PROXYBLOB_DATA_FRAME` | 32768 | Maximum outgoing DATA payload |
-| `PROXYBLOB_BATCH_BYTES` | 131072 | Maximum encoded transport write batch |
+| `PROXYBLOB_BATCH_BYTES` | 524288 | Maximum encoded transport write batch |
 | `PROXYBLOB_CONTROL_SLOTS` | 512 | Pending control records; at least four per stream |
 | `PROXYBLOB_DRAIN_TIMEOUT` | 5s | Tunnel/full-close graceful drain, followed by abort |
 
 The receive budget is not a total process heap cap. Outgoing DATA is separately
-bounded by one frame per admitted producer and the writer's batch. Control
+bounded by the stream and tunnel byte limits above, counting both queued and
+in-flight records until transport completion. Outgoing capacity exhaustion
+pauses admission. Metadata is additionally capped at 64 DATA records per stream
+and `64 * MaxStreams` per tunnel, including cancelled streams still in flight.
+Each active forwarding producer owns one scratch frame outside those budgets;
+the writer owns one encoded batch. Thus the defaults allow 64 MiB of receive
+rings and a separate 64 MiB of outstanding outgoing payload per endpoint, plus
+at most 4 MiB of producer scratch, one 512-KiB batch and bounded record/header
+metadata. Allocator rounding and unreclaimed garbage add heap overhead. Control
 payloads are at most 12 bytes each. Framing retains at most one incomplete
 1-MiB record plus a 64-KiB read chunk and the current decoded record. Socket,
 application, aznet, allocator and GC overhead are outside the ring budget.
 A control flood that exhausts reserved control capacity aborts the tunnel;
 ordinary zero-credit streams neither fill that queue nor cause resets.
 
-## Measurements behind the defaults
+## Earlier measurements (superseded defaults)
 
 Native runtime measurements on darwin/arm64, Go 1.26.4, using two endpoints over
 `net.Pipe`, with the committed published dependency. These are local multiplexing
@@ -96,7 +107,7 @@ sub-millisecond peaks. Latency is application exchange latency, not packet RTT.
 At 128 streams, the 16/64/256-KiB windows completed 128 MiB of bulk transfers in
 115.437125ms/88.480083ms/88.318708ms, respectively.
 Idle heap deltas were 12.37/26.41/81.53 MiB.
-The 64-KiB receive reservation balances window headroom with bounded memory;
+The initial 64-KiB receive reservation balanced window headroom with bounded memory;
 128 streams reserve exactly 8 MiB per endpoint. Local CPU/heap results alone do
 not establish performance under storage latency.
 
@@ -111,7 +122,7 @@ covered for single-byte reads and delayed final DATA.
 The batch comparison also models request cost: with 10 ms per transport Write,
 16 concurrent 256-KiB streams completed in 1.439 s / 258 transport writes with
 64-KiB batches, versus 0.507 s / 91 writes with 128-KiB batches. A 64-KiB encoded
-batch cannot hold two 32-KiB payloads plus headers. The selected 128-KiB bound
+batch cannot hold two 32-KiB payloads plus headers. The initial 128-KiB bound
 fits several frames and control records without unbounded collection. The
 single-stream result stayed near 100 ms in both cases. These are simulated
 transport costs, not measured Azure request counts or billed operations.
@@ -127,7 +138,7 @@ stream. The 5-second drain allowance exceeds measured exchanges while bounding
 cleanup; it remains configurable for real storage latency. These defaults
 remain subject to separate storage measurement work.
 
-## Historical throughput regression: merge gate
+## Historical throughput regression
 
 The initial comparison above used main after PR #13. It therefore missed a
 larger regression introduced by synchronous per-DATA transport confirmation.
@@ -150,12 +161,53 @@ The receive-buffer change showed no corresponding regression in this probe.
 These results isolate a mechanism under simulated storage cost, not actual
 Azure throughput or billing.
 
-**Hold merge for a bounded-pipelining correction.** The earlier frame/credit
-fix removes the extra regression from this ticket, but does not restore
-pre-#13 single-stream throughput. The correction must allow bounded data to
-accumulate while storage is writing, retain credit-backed receive reservations,
-and preserve confirmed draining, write errors and ordered EOF. Simply removing
-confirmation would abandon integrity guarantees and is not the shipped fix.
+The bounded pipeline now corrects this serialization mechanism without removing
+confirmation from direct Write or the forwarding completion barrier. The larger
+finite windows below address the remaining credit round-trip limitation. This
+does not promise the earlier unbounded implementation's throughput in every
+workload or establish live Blob performance.
+
+## Pipeline measurements and current defaults
+
+`TestStorageFixedTransfer` checks a real TCP SOCKS flow with 1 MiB request and
+1 MiB response, byte identity and an application acknowledgement. Set
+`PROXYBLOB_LATENCY_MS=50` to model 50 ms per transport Write. On darwin/arm64,
+Go 1.26.4 with the committed published dependency, the pre-pipeline revision
+`6e7f6dc` took 3.840 s and 137 writes. The pipeline with a 512-KiB receive window
+and 512-KiB batch took 1.148–1.203 s and 28–29 writes in three runs. A 1-MiB
+window took 0.839–0.840 s and 18 writes, but doubled receive reservations.
+These are transport calls, not Azure requests or billed operations. The
+pre-#13 unbounded baseline was faster still (0.579 s); finite credit and batch
+limits deliberately retain backpressure.
+
+The 64-KiB window remained a bottleneck after pipelining. The 512-KiB choice
+allows sixteen normal copy frames in flight; the 512-KiB encoded batch allows
+multiple frames to share an upload while retaining bounded control latency.
+The 64-MiB tunnel receive budget admits 128 such windows. Smaller deployments
+can lower the tunnel budget and stream count; a smaller window reduces memory
+but also throughput on transports with high request latency. The DATA frame
+stays 32 KiB, preserving scheduling granularity.
+
+`TestFlowWorkloads` now exercises the forwarding pipeline with finite in-memory
+sources. With the current defaults, the same workload definitions and heap
+sampling method described above produced (MiB across both endpoints and test
+buffers; p95 is exchange latency):
+
+| Streams | Idle heap | Interactive heap / p95 | Bulk heap / p95 | Slow heap / healthy p95 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 3.15 | 3.71 / 256.667µs | 6.54 / 280.5µs | 3.83 / 50.042µs |
+| 16 | 18.19 | 29.00 / 409.042µs | 60.22 / 4.192166ms | 59.26 / 444µs |
+| 64 | 66.27 | 99.76 / 1.036375ms | 227.56 / 15.004791ms | 236.92 / 1.626541ms |
+| 128 | 130.41 | 209.41 / 1.883375ms | 445.65 / 28.2925ms | 473.69 / 3.043709ms |
+
+At 128 streams, 256/512/1024-KiB windows showed sampled slow-workload heap
+of 236.85/473.69/862.20 MiB and healthy p95 of 1.43625ms/3.043709ms/9.673375ms.
+The harness allocates both endpoints and 2-window source payloads for stalled
+streams; these values are not per-agent retained memory. The 512-KiB choice
+trades higher finite memory than the original defaults for substantially fewer
+storage round trips, without the full memory cost of 1-MiB windows. Live Blob
+throughput remains a rollout check; native in-memory and latency-model evidence
+cannot substitute for it.
 
 ## Rollout and validation scope
 
