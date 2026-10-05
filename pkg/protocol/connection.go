@@ -27,7 +27,7 @@ type Connection struct {
 	handler                        *BaseHandler
 	buffer                         []byte
 	head, used                     int
-	consumed                       uint64
+	consumed, credited             uint64
 	changed                        chan struct{}
 	sendEnded                      bool
 	sendMu                         sync.Mutex
@@ -126,13 +126,18 @@ func (c *Connection) Deliver(data []byte) bool {
 	if c.buffer == nil {
 		c.buffer = make([]byte, DefaultFlowConfig().StreamWindow)
 	}
-	if len(data) > len(c.buffer)-c.used {
+	available := len(c.buffer) - c.used
+	if c.handler != nil {
+		available -= int(c.consumed - c.credited)
+	}
+	if len(data) > available {
 		return false
 	}
 	tail := (c.head + c.used) % len(c.buffer)
 	n := copy(c.buffer[tail:], data)
 	copy(c.buffer, data[n:])
 	c.used += len(data)
+	c.returnCredit()
 	c.notifyReader()
 	return true
 }
@@ -179,12 +184,9 @@ func (c *Connection) read(ctx context.Context, closed <-chan struct{}, b []byte)
 				return 0, ErrFlowControl
 			}
 			c.consumed += uint64(n)
-			consumed, h := c.consumed, c.handler
 			// The bytes have left the ring. Read's caller now owns its own bounded
 			// buffer; no protocol queue retains the delivered allocation.
-			if h != nil {
-				h.queueCredit(c.ID, consumed)
-			}
+			c.returnCredit()
 			c.deliveryMu.Unlock()
 			return n, nil
 		}
@@ -204,5 +206,24 @@ func (c *Connection) read(ctx context.Context, closed <-chan struct{}, b []byte)
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
+	}
+}
+
+// returnCredit runs under deliveryMu. Batch small reads while the peer still
+// has usable credit, but flush even one released byte once its grant has been
+// received in full. Deliver must also call this: the final in-flight DATA can
+// exhaust the grant after the application has stopped reading.
+func (c *Connection) returnCredit() {
+	if c.handler == nil {
+		return
+	}
+	pending := c.consumed - c.credited
+	if pending == 0 {
+		return
+	}
+	grantExhausted := uint64(len(c.buffer)-c.used) == pending
+	if pending >= uint64(max(len(c.buffer)/2, 1)) || grantExhausted {
+		c.credited = c.consumed
+		c.handler.queueCredit(c.ID, c.consumed)
 	}
 }

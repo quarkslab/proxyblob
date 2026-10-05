@@ -499,9 +499,11 @@ func TestReceiveStorageBound(t *testing.T) {
 type observedConn struct {
 	net.Conn
 	maximum atomic.Int64
+	writes  atomic.Int64
 }
 
 func (c *observedConn) Write(p []byte) (int, error) {
+	c.writes.Add(1)
 	for old := c.maximum.Load(); int64(len(p)) > old; old = c.maximum.Load() {
 		if c.maximum.CompareAndSwap(old, int64(len(p))) {
 			break
@@ -581,4 +583,71 @@ func TestFlowRegistrationRacesAbort(t *testing.T) {
 		}
 		h.Connections.Range(func(_, _ any) bool { t.Error("stream published after abort"); return true })
 	}
+}
+
+func TestFlowBatchesSmallConsumptionUntilCreditIsNeeded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		left, right := net.Pipe()
+		wire := &observedConn{Conn: right}
+		a, b := flowPairOn(t, tinyFlow(), left, wire)
+		x, y := openFlow(t, a, b)
+		if _, err := x.Write([]byte{1}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		before := wire.writes.Load()
+		if _, err := y.Read(make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if wire.writes.Load() != before {
+			t.Error("small consumption caused a separate transport write despite ample credit")
+		}
+		// Consume no more: the last bytes arriving must flush the pending credit,
+		// otherwise a zero-credit peer would wait forever for another Read.
+		if _, err := x.Write(make([]byte, 31)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := x.Write([]byte{2}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestFlowZeroCreditResumesAfterSingleByteRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, b := flowPair(t, tinyFlow())
+		x, y := openFlow(t, a, b)
+		if _, err := x.Write(make([]byte, 32)); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { _, err := x.Write([]byte{1}); done <- err }()
+		synctest.Wait()
+		if _, err := y.Read(make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestFlowDefaultFrameDoesNotSplitCopyBuffer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		left, right := net.Pipe()
+		wire := &observedConn{Conn: left}
+		a, b := flowPairOn(t, DefaultFlowConfig(), wire, right)
+		x, _ := openFlow(t, a, b)
+		synctest.Wait()
+		before := wire.writes.Load()
+		// io.Copy uses a 32-KiB forwarding buffer. Splitting it adds a serial
+		// storage request even though both frame and receive budgets have room.
+		if _, err := x.Write(make([]byte, 32<<10)); err != nil {
+			t.Fatal(err)
+		}
+		if writes := wire.writes.Load() - before; writes != 1 {
+			t.Fatalf("one copy buffer required %d transport writes", writes)
+		}
+	})
 }

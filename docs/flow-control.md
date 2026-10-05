@@ -32,9 +32,12 @@ and reports forced abort as an error, not clean EOF.
 
 A stream has at most one pending DATA frame. FIFO admission, followed by waiting
 for the batch's transport result, places sustained producers behind other ready
-streams. Control records use separate bounded capacity. Credits coalesce to one
-pending update per stream; a zero-credit peer does not depend on a size threshold
-or timer to receive its update. At most eight controls are selected ahead of a
+streams. Control records use separate bounded capacity. Credit updates coalesce to one pending record per stream. Small reads accumulate
+until half the window is released, or the advertised grant has been fully
+received. The exhausted-grant case flushes even one released byte, both when
+Read consumes data and when the last in-flight DATA arrives; a zero-credit
+peer never waits for more consumption or a timer. Unadvertised consumption is
+excluded from receive admission. At most eight controls are selected ahead of a
 ready DATA frame. Batch collection stops at the byte limit or one millisecond;
 there is no intentional coalescing delay. Short writes advance by the reported
 count, while zero progress or an error terminates the tunnel without replay.
@@ -51,8 +54,8 @@ use Go syntax. Invalid or internally inconsistent limits are rejected.
 | `PROXYBLOB_STREAM_WINDOW` | 65536 | Receive bytes reserved per stream/direction |
 | `PROXYBLOB_TUNNEL_WINDOW` | 8388608 | Receive reservation budget per endpoint/tunnel |
 | `PROXYBLOB_MAX_STREAMS` | 128 | Concurrent admitted streams |
-| `PROXYBLOB_DATA_FRAME` | 16384 | Maximum outgoing DATA payload |
-| `PROXYBLOB_BATCH_BYTES` | 65536 | Maximum encoded transport write batch |
+| `PROXYBLOB_DATA_FRAME` | 32768 | Maximum outgoing DATA payload |
+| `PROXYBLOB_BATCH_BYTES` | 131072 | Maximum encoded transport write batch |
 | `PROXYBLOB_CONTROL_SLOTS` | 512 | Pending control records; at least four per stream |
 | `PROXYBLOB_DRAIN_TIMEOUT` | 5s | Tunnel/full-close graceful drain, followed by abort |
 
@@ -80,26 +83,49 @@ the healthy stream completes 20 interactive exchanges. Peak heap is sampled at
 and test application buffers. It includes unreclaimed allocations and can miss
 sub-millisecond peaks. Latency is application exchange latency, not packet RTT.
 
-64-KiB window results (heap deltas in MiB, p95 in ms):
+64-KiB window results with 32-KiB DATA frames and 128-KiB batches
+(heap deltas in MiB; p95 shown with units):
 
 | Streams | Idle heap | Interactive heap / p95 | Bulk heap / p95 | Slow heap / healthy p95 |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 2.65 | 5.29 / 0.264 | 6.51 / 1.183 | 5.29 / 0.261 |
-| 16 | 5.80 | 8.09 / 0.845 | 25.25 / 5.806 | 9.96 / 0.197 |
-| 64 | 13.46 | 19.20 / 1.313 | 86.61 / 14.963 | 37.20 / 0.568 |
-| 128 | 25.23 | 35.58 / 1.763 | 168.90 / 28.536 | 62.25 / 1.322 |
+| 1 | 3.03 | 5.02 / 376.167µs | 6.57 / 1.108875ms | 6.29 / 209.834µs |
+| 16 | 7.68 | 9.72 / 768µs | 26.33 / 4.294375ms | 12.96 / 226.917µs |
+| 64 | 14.44 | 20.24 / 1.1525ms | 92.18 / 13.293166ms | 34.19 / 757.459µs |
+| 128 | 26.41 | 35.48 / 1.885458ms | 177.77 / 27.758084ms | 67.95 / 1.498917ms |
 
 At 128 streams, the 16/64/256-KiB windows completed 128 MiB of bulk transfers in
-118.5/99.4/101.5 ms, respectively. Idle heap deltas were 10.57/25.23/75.30 MiB;
-slow-workload heap deltas were 17.19/62.25/210.27 MiB. The 64-KiB choice improved
-bulk completion over 16 KiB without the 256-KiB memory cost; 256 KiB showed no
-bulk benefit in this run. The 128-stream ceiling is the highest measured
-concurrency, with 8 MiB of receive reservations per endpoint. Four 16-KiB credit
-quanta per window and a 64-KiB batch limit preserve short scheduling turns.
-512 controls allow one coalesced credit and setup/EOF/close capacity per stream.
-The retained 5-second drain allowance greatly exceeds measured p95 exchanges
-while bounding cleanup; it is configurable for real storage latency. These are
-conservative finite defaults, subject to the separate storage measurement work.
+115.437125ms/88.480083ms/88.318708ms, respectively.
+Idle heap deltas were 12.37/26.41/81.53 MiB.
+The 64-KiB receive reservation balances window headroom with bounded memory;
+128 streams reserve exactly 8 MiB per endpoint. Local CPU/heap results alone do
+not establish performance under storage latency.
+
+A user-reported Blob slowdown exposed that limitation. A real-TCP SOCKS transfer
+of 530,000 bytes over a transport with 50 ms added per Write took about 1.29 s
+before flow control, 2.26 s with the initial 16-KiB frames, and 1.38–1.42 s after
+this correction. A normal 32-KiB io.Copy write no longer becomes two sequential
+storage writes, and small SOCKS reads no longer each generate credit traffic.
+The 64-KiB window still contains two DATA frames; zero-credit resume remains
+covered for single-byte reads and delayed final DATA.
+
+The batch comparison also models request cost: with 10 ms per transport Write,
+16 concurrent 256-KiB streams completed in 1.439 s / 258 transport writes with
+64-KiB batches, versus 0.507 s / 91 writes with 128-KiB batches. A 64-KiB encoded
+batch cannot hold two 32-KiB payloads plus headers. The selected 128-KiB bound
+fits several frames and control records without unbounded collection. The
+single-stream result stayed near 100 ms in both cases. These are simulated
+transport costs, not measured Azure request counts or billed operations.
+
+Repeat the end-to-end latency probe with `PROXYBLOB_LATENCY_MS=50 go test -v
+-run TestStorageLatencyTransfer ./pkg/proxy/server`, and the concurrent batch
+comparison with `PROXYBLOB_MEASURE_LATENCY=1 go test -v -run
+TestFlowStorageLatency ./pkg/protocol`. Native baseline/after logs remain in the
+local ticket evidence. Actual Blob behavior still needs the user's retest.
+
+512 control slots allow one coalesced credit and setup/EOF/close capacity per
+stream. The 5-second drain allowance exceeds measured exchanges while bounding
+cleanup; it remains configurable for real storage latency. These defaults
+remain subject to separate storage measurement work.
 
 ## Rollout and validation scope
 

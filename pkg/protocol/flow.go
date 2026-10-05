@@ -29,7 +29,7 @@ type FlowConfig struct {
 func DefaultFlowConfig() FlowConfig {
 	return FlowConfig{
 		StreamWindow: 64 << 10, TunnelWindow: 8 << 20, MaxStreams: 128,
-		DataFrame: 16 << 10, BatchBytes: 64 << 10, ControlSlots: 512, DrainTimeout: DrainTimeout,
+		DataFrame: 32 << 10, BatchBytes: 128 << 10, ControlSlots: 512, DrainTimeout: DrainTimeout,
 	}
 }
 

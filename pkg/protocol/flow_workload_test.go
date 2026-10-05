@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"runtime"
 	"slices"
@@ -156,6 +157,67 @@ func TestFlowWorkloads(t *testing.T) {
 					p95 = samples[(len(samples)-1)*95/100]
 				}
 				t.Logf("window=%d concurrency=%d mode=%s reserved_per_endpoint=%d peak_heap_delta=%d p50=%s p95=%s bytes=%d elapsed=%s", window, concurrency, mode, window*concurrency, peak.Load()-before.HeapAlloc, p50, p95, transferred.Load(), elapsed)
+			})
+		}
+	}
+}
+
+type delayedWriteConn struct {
+	net.Conn
+	delay  time.Duration
+	writes atomic.Int64
+}
+
+func (c *delayedWriteConn) Write(p []byte) (int, error) {
+	time.Sleep(c.delay)
+	c.writes.Add(1)
+	return c.Conn.Write(p)
+}
+
+// Compare batching under a fixed request cost, separately from local CPU/heap
+// measurements. The count is transport writes, not billed Azure transactions.
+func TestFlowStorageLatency(t *testing.T) {
+	if os.Getenv("PROXYBLOB_MEASURE_LATENCY") == "" {
+		t.Skip("opt-in transport request-cost comparison")
+	}
+	for _, batch := range []int{64 << 10, 128 << 10} {
+		for _, concurrency := range []int{1, 16} {
+			t.Run(fmt.Sprintf("batch%d/streams%d", batch, concurrency), func(t *testing.T) {
+				cfg := DefaultFlowConfig()
+				cfg.BatchBytes = batch
+				rawA, rawB := net.Pipe()
+				aWire, bWire := &delayedWriteConn{Conn: rawA, delay: 10 * time.Millisecond}, &delayedWriteConn{Conn: rawB, delay: 10 * time.Millisecond}
+				a, b := flowPairOn(t, cfg, aWire, bWire)
+				writers, readers := make([]*ProtocolConn, concurrency), make([]*ProtocolConn, concurrency)
+				for i := range writers {
+					writers[i], readers[i] = openFlow(t, a, b)
+				}
+				before := aWire.writes.Load() + bWire.writes.Load()
+				start := time.Now()
+				results := make(chan error, concurrency*2)
+				for i := range writers {
+					payload := bytes.Repeat([]byte{byte(i)}, 256<<10)
+					go func() {
+						_, err := writers[i].Write(payload)
+						if err == nil {
+							err = writers[i].CloseWrite()
+						}
+						results <- err
+					}()
+					go func() {
+						got, err := io.ReadAll(readers[i])
+						if err == nil && !bytes.Equal(got, payload) {
+							err = io.ErrUnexpectedEOF
+						}
+						results <- err
+					}()
+				}
+				for i := 0; i < concurrency*2; i++ {
+					if err := <-results; err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Logf("batch=%d streams=%d bytes=%d elapsed=%v transport_writes=%d", batch, concurrency, concurrency*(256<<10), time.Since(start), aWire.writes.Load()+bWire.writes.Load()-before)
 			})
 		}
 	}
