@@ -45,11 +45,12 @@ const banner = `
 
 // ListenerConfig holds Azure Storage credentials for a single listener.
 type ListenerConfig struct {
-	Name               string `json:"name"`                // listener name/ID
-	Driver             string `json:"driver"`              // azblob, aztable, or azqueue
-	Address            string `json:"address"`             // endpoint URL (e.g. http://127.0.0.1:10001)
-	StorageAccountName string `json:"storage_account"`     // account ID
-	StorageAccountKey  string `json:"storage_account_key"` // access key
+	SessionDuration    string `json:"session_duration,omitempty"` // Go duration for newly issued sessions; default 24h
+	Name               string `json:"name"`                       // listener name/ID
+	Driver             string `json:"driver"`                     // azblob, aztable, or azqueue
+	Address            string `json:"address"`                    // endpoint URL (e.g. http://127.0.0.1:10001)
+	StorageAccountName string `json:"storage_account"`            // account ID
+	StorageAccountKey  string `json:"storage_account_key"`        // access key
 }
 
 // Config holds multiple listener configurations.
@@ -96,7 +97,8 @@ func (a *AgentConnection) setLastSeen(t time.Time) {
 // AgentInfo tracks connected agent metadata for display.
 type AgentInfo struct {
 	*AgentConnection
-	ProxyPort string // SOCKS port (if proxy is running)
+	ProxyPort     string    // SOCKS port (if proxy is running)
+	SessionExpiry time.Time // zero means unknown; supplied by aznet, never estimated
 }
 
 // Global state.
@@ -188,8 +190,20 @@ func (lc *ListenerConfig) Validate() error {
 	if lc.StorageAccountKey == "" {
 		return fmt.Errorf("storage_account_key is required")
 	}
+	_, err := lc.sessionDuration()
+	return err
+}
 
-	return nil
+// sessionDuration keeps bootstrap validity independent from session policy.
+func (lc *ListenerConfig) sessionDuration() (time.Duration, error) {
+	if lc.SessionDuration == "" {
+		return aznet.DefaultSASExpiry, nil
+	}
+	d, err := time.ParseDuration(lc.SessionDuration)
+	if err != nil || d < time.Second {
+		return 0, fmt.Errorf("session_duration must be a duration of at least 1s (for example 24h)")
+	}
+	return d, nil
 }
 
 // StartListener creates and starts an aznet listener for the given listener config.
@@ -241,7 +255,8 @@ func StartListener(listenerID string) error {
 	// Keep aznet polling defaults; retry policy here applies only to failures.
 	ctx, cancel := context.WithCancel(context.Background())
 	handshake, token := bootstrapEndpoints(listenerID)
-	l, err := listenAzure(listenerConfig.Driver, listenAddr, aznet.WithContext(ctx), aznet.WithEndpoints(handshake, token))
+	sessionDuration, _ := listenerConfig.sessionDuration() // validated above
+	l, err := listenAzure(listenerConfig.Driver, listenAddr, aznet.WithContext(ctx), aznet.WithEndpoints(handshake, token), aznet.WithSessionDuration(sessionDuration))
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to start aznet listener: %v", err)
@@ -297,9 +312,14 @@ func GenerateConnectionString(listenerID string, expiry time.Duration) (string, 
 		return "", fmt.Errorf("listener '%s' is not running", listenerID)
 	}
 
-	// The expiry parameter is currently ignored by the library's ConnectionString method.
-	// It uses the DefaultSASExpiry (24h) or the one set via WithSASExpiry during Listen.
-	connStr, err := listener.ConnectionString()
+	// Bootstrap issuance does not change the listener's session policy.
+	issuer, ok := listener.(interface {
+		ConnectionStringFor(time.Duration) (string, error)
+	})
+	if !ok {
+		return "", aznet.ErrBootstrapDurationUnsupported
+	}
+	connStr, err := issuer.ConnectionStringFor(expiry)
 	if err != nil {
 		return "", err
 	}
@@ -494,9 +514,14 @@ func ListAgents() []AgentInfo {
 			}
 		}
 
+		expiry, known := aznet.GetSessionExpiry(agent.Conn)
+		if !known {
+			expiry = time.Time{}
+		}
 		agents = append(agents, AgentInfo{
 			AgentConnection: agent,
 			ProxyPort:       proxyPort,
+			SessionExpiry:   expiry,
 		})
 		return true
 	})
@@ -555,8 +580,9 @@ func RenderListenerTable(listeners []ListenerInfo, defaultID string) string {
 	return t.Render()
 }
 
-// RenderAgentTable formats agent information into a human-readable table.
-func RenderAgentTable(agents []AgentInfo) string {
+// RenderAgentTable formats agent information at now. Authorization expiry is
+// informational: it neither guarantees liveness nor schedules disconnection.
+func RenderAgentTable(agents []AgentInfo, now time.Time) string {
 	t := table.NewWriter()
 	t.SetStyle(table.StyleRounded)
 
@@ -567,9 +593,22 @@ func RenderAgentTable(agents []AgentInfo) string {
 		"Proxy Port",
 		"Connected At",
 		"Last Seen",
+		"Session Expires (UTC)",
+		"Authorization Remaining",
 	})
 
 	for _, a := range agents {
+		expiry, remaining := "unknown", "unknown"
+		if !a.SessionExpiry.IsZero() {
+			expiry = a.SessionExpiry.UTC().Format(time.RFC3339Nano)
+			if !a.SessionExpiry.After(now) {
+				remaining = "expired"
+			} else if a.SessionExpiry.Sub(now) < time.Second {
+				remaining = "<1s"
+			} else {
+				remaining = a.SessionExpiry.Sub(now).Truncate(time.Second).String()
+			}
+		}
 		t.AppendRow(table.Row{
 			a.ID,
 			a.Info,
@@ -577,6 +616,7 @@ func RenderAgentTable(agents []AgentInfo) string {
 			a.ProxyPort,
 			a.CreatedAt.Format("2006-01-02 15:04:05"),
 			formatRelativeTime(a.lastSeen()),
+			expiry, remaining,
 		})
 	}
 
@@ -732,7 +772,7 @@ func AddCommands(app *grumble.App) {
 		Name: "new",
 		Help: "generate a new connection string for an agent",
 		Flags: func(f *grumble.Flags) {
-			f.Duration("d", "duration", 7*24*time.Hour, "duration for the SAS token (default 7 days)")
+			f.Duration("d", "duration", 7*24*time.Hour, "bootstrap connection-string validity (default 7 days; independent of session duration)")
 			f.String("l", "listener", "", "listener ID to use (defaults to selected listener)")
 		},
 		Run: func(c *grumble.Context) error {
@@ -789,7 +829,7 @@ func AddCommands(app *grumble.App) {
 				return nil
 			}
 
-			c.App.Println(RenderAgentTable(agents))
+			c.App.Println(RenderAgentTable(agents, time.Now()))
 			return nil
 		},
 	})
@@ -982,7 +1022,7 @@ func AddCommands(app *grumble.App) {
 			return nil
 		}
 
-		c.App.Println(RenderAgentTable(agents))
+		c.App.Println(RenderAgentTable(agents, time.Now()))
 		return nil
 	}
 
