@@ -20,7 +20,7 @@ type PacketHandler interface {
 	// Start begins packet processing and listens on the specified address (listen only on proxy side)
 	Start(string)
 
-	// Stop gracefully terminates all connections and processing
+	// Stop aborts all connections and processing
 	Stop()
 
 	// ReceiveLoop processes incoming packets until stopped
@@ -46,7 +46,14 @@ type BaseHandler struct {
 	conn net.Conn
 
 	// writeCh buffers encoded packets for the writeLoop goroutine
-	writeCh chan []byte
+	writeCh     chan writeRequest
+	admissionMu sync.RWMutex
+	drainOnce   sync.Once
+	draining    chan struct{}
+	writerDone  chan struct{}
+	abortDone   chan struct{}
+	writeErrMu  sync.Mutex
+	writeErr    error
 
 	// Connections maps UUIDs to active Connection objects
 	Connections sync.Map
@@ -72,12 +79,25 @@ func NewBaseHandler(parentCtx context.Context, conn net.Conn) *BaseHandler {
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	h := &BaseHandler{
-		conn:    conn,
-		writeCh: make(chan []byte, 1024),
-		Ctx:     ctx,
-		Cancel:  cancel,
+		conn:       conn,
+		writeCh:    make(chan writeRequest, 1024),
+		draining:   make(chan struct{}),
+		writerDone: make(chan struct{}),
+		abortDone:  make(chan struct{}),
+		Ctx:        ctx,
+		Cancel:     cancel,
 	}
 	go h.writeLoop()
+	go func() {
+		<-ctx.Done()
+		// Interrupt I/O without taking session resource ownership from the caller.
+		if err := conn.SetDeadline(time.Now()); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+			// A transport without deadlines must implement net.Conn.Close cancellation.
+			conn.Close()
+		}
+		h.CloseAllConnections()
+		close(h.abortDone)
+	}()
 	return h
 }
 
@@ -198,6 +218,10 @@ func (h *BaseHandler) ReceiveLoop() {
 				errors.Is(err, net.ErrClosed) ||
 				errors.Is(err, io.ErrClosedPipe) ||
 				errors.Is(err, os.ErrDeadlineExceeded) {
+				if len(acc) > 0 && errors.Is(err, io.EOF) {
+					err = io.ErrUnexpectedEOF
+				}
+				h.drainReceived(err)
 				h.Stop()
 				return
 			}
@@ -244,6 +268,11 @@ func (h *BaseHandler) handlePacket(packet *Packet) byte {
 		return h.PacketHandler.OnAck(packet.ConnectionID, packet.Data)
 	case CmdData:
 		return h.PacketHandler.OnData(packet.ConnectionID, packet.Data)
+	case CmdEOF:
+		if len(packet.Data) != 0 {
+			return ErrInvalidPacket
+		}
+		return h.FinishConnection(packet.ConnectionID)
 	case CmdClose:
 		// A close carries a one byte error code; indexing an empty payload would
 		// panic. This is a per-connection error and deliberately NOT malformed
@@ -278,106 +307,22 @@ func (h *BaseHandler) SendData(connectionID uuid.UUID, data []byte) byte {
 		return ErrConnectionNotFound
 	}
 
-	return h.sendPacket(CmdData, connectionID, data)
+	if err := h.sendData(connectionID, data, nil); err != nil {
+		return ErrPacketSendFailed
+	}
+	return ErrNone
 }
 
 // SendClose sends a connection termination packet with an error code.
 func (h *BaseHandler) SendClose(connectionID uuid.UUID, errCode byte) byte {
-	connObj, exists := h.Connections.Load(connectionID)
+	connObj, exists := h.Connections.LoadAndDelete(connectionID)
 	if !exists {
 		return ErrConnectionNotFound
 	}
 	conn := connObj.(*Connection)
 
 	conn.Close()
-	h.Connections.Delete(connectionID)
 	return h.sendPacket(CmdClose, connectionID, []byte{errCode})
-}
-
-// sendPacket encodes a packet and submits it to the write coalescing channel.
-// The actual aznet write happens asynchronously in writeLoop.
-func (h *BaseHandler) sendPacket(cmd byte, connectionID uuid.UUID, data []byte) byte {
-	if h.Ctx.Err() != nil {
-		return ErrHandlerStopped
-	}
-
-	packet := NewPacket(cmd, connectionID, data)
-	if packet == nil {
-		return ErrInvalidPacket
-	}
-
-	encoded := packet.Encode()
-	if encoded == nil {
-		return ErrInvalidPacket
-	}
-
-	select {
-	case h.writeCh <- encoded:
-		return ErrNone
-	case <-h.Ctx.Done():
-		return ErrHandlerStopped
-	}
-}
-
-// writeLoop coalesces queued packets and writes them in batches to aznet.
-// Only this goroutine calls conn.Write, eliminating fmu contention.
-func (h *BaseHandler) writeLoop() {
-	for {
-		var buf []byte
-
-		// Wait for the first packet
-		select {
-		case first := <-h.writeCh:
-			buf = append(buf, first...)
-		case <-h.Ctx.Done():
-			// sendPacket already reported success to its callers (ultimately to
-			// io.Copy) for everything still queued, so returning here without
-			// draining would silently discard records the peer was told to
-			// expect. Flush what is left, best effort, then exit.
-			h.drainWriteCh()
-			return
-		}
-
-		// Drain all queued packets (non-blocking)
-		for {
-			select {
-			case more := <-h.writeCh:
-				buf = append(buf, more...)
-			default:
-				goto flush
-			}
-		}
-
-	flush:
-		if _, err := h.conn.Write(buf); err != nil {
-			// The underlying Write can return (0, err) even when part of the batch
-			// already reached the peer, so there is no safe retry: resending the
-			// batch would duplicate bytes on the wire and desynchronize the
-			// length-prefixed stream. Cancelling without retry stays correct.
-			h.Cancel()
-			return
-		}
-	}
-}
-
-// drainWriteCh empties writeCh without blocking and makes a single final write
-// attempt with whatever was still queued. Used on shutdown so that records
-// already acknowledged by sendPacket get one chance to reach the peer.
-func (h *BaseHandler) drainWriteCh() {
-	var buf []byte
-	for {
-		select {
-		case more := <-h.writeCh:
-			buf = append(buf, more...)
-		default:
-			if len(buf) > 0 {
-				// Best effort: the transport may already be gone. The same
-				// no-retry rule as in writeLoop applies to any error here.
-				_, _ = h.conn.Write(buf)
-			}
-			return
-		}
-	}
 }
 
 func (h *BaseHandler) CloseAllConnections() {
@@ -387,4 +332,80 @@ func (h *BaseHandler) CloseAllConnections() {
 		h.Connections.Delete(key)
 		return true
 	})
+}
+
+// FinishConnection preserves all accepted incoming bytes before exposing EOF.
+func (h *BaseHandler) FinishConnection(id uuid.UUID) byte {
+	value, ok := h.Connections.Load(id)
+	if !ok {
+		return ErrConnectionNotFound
+	}
+	value.(*Connection).FinishDelivery()
+	return ErrNone
+}
+
+// DrainTimeout bounds cleanup after tunnel EOF. It is not a flow-control or
+// transfer timeout: normal directional EOF can wait for a response indefinitely.
+const DrainTimeout = 5 * time.Second
+
+func (h *BaseHandler) drainReceived(readErr error) {
+	ctx, cancel := context.WithTimeout(h.Ctx, DrainTimeout)
+	defer cancel()
+	// Run the seal/wait separately: a full delivery queue can hold its admission
+	// lock until cancellation releases it.
+	done := make(chan struct{})
+	go func() {
+		h.Connections.Range(func(_, value any) bool { value.(*Connection).finishDelivery(readErr); return true })
+		h.Connections.Range(func(_, value any) bool {
+			select {
+			case <-value.(*Connection).Closed:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+		if h.writerDone != nil {
+			if err := h.Drain(ctx); err != nil {
+				log.Warn().Err(err).Msg("Tunnel write drain failed")
+			}
+		}
+	case <-ctx.Done():
+		log.Warn().Err(ctx.Err()).Msg("Tunnel delivery drain forced to abort")
+	}
+}
+
+// Abort stops admission and interrupts pending I/O. Session Close remains with
+// the listener/agent owner; the transport deadline releases its reader/writer.
+func (h *BaseHandler) Abort() { h.Cancel(); <-h.abortDone }
+
+// PeerClose is a full-stream graceful close or an explicit failure. Unlike
+// directional EOF, full close bounds the time allowed for application draining.
+func (h *BaseHandler) PeerClose(id uuid.UUID, code byte) byte {
+	value, ok := h.Connections.Load(id)
+	if !ok {
+		return ErrNone
+	}
+	c := value.(*Connection)
+	if code != ErrNone {
+		c.Close()
+		h.Connections.Delete(id)
+		return ErrNone
+	}
+	go func() {
+		timer := time.NewTimer(DrainTimeout)
+		defer timer.Stop()
+		select {
+		case <-c.Closed:
+		case <-timer.C:
+			log.Warn().Str("conn_id", id.String()).Msg("Peer close drain forced to abort")
+			c.Close()
+			h.Connections.CompareAndDelete(id, c)
+		}
+	}()
+	c.FinishDelivery()
+	return ErrNone
 }

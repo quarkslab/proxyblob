@@ -2,9 +2,7 @@ package proxy
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 
 	"proxyblob/pkg/protocol"
@@ -53,6 +51,10 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 		tcpConn.SetNoDelay(true)
 	}
 
+	if !conn.AttachDestination(targetConn) {
+		return protocol.ErrConnectionClosed
+	}
+
 	// Send success response
 	// Use stack allocation for fixed-size response (10 bytes)
 	localAddr := targetConn.LocalAddr().(*net.TCPAddr)
@@ -71,9 +73,6 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 		return protocol.ErrPacketSendFailed
 	}
 
-	// Store connection (state is already established via ProtocolConn)
-	conn.Conn = targetConn
-
 	// Start data transfer
 	return h.handleTCPDataTransfer(conn, targetConn)
 }
@@ -86,69 +85,11 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 //   - The context is canceled
 //   - An error occurs
 func (h *SocksHandler) handleTCPDataTransfer(conn *protocol.Connection, tcpConn net.Conn) byte {
-	// The connection is established by the time forwarding starts, so the virtual
-	// connection is set; load it once for the life of the transfer.
-	protoConn := conn.ProtocolConn()
-	errCh := make(chan error, 2)
-
-	// Client → Target
-	go func() {
-		_, err := io.Copy(tcpConn, protoConn)
-		// Half-close: close write side of target when client→target finishes
-		if tcpCloser, ok := tcpConn.(*net.TCPConn); ok {
-			tcpCloser.CloseWrite()
-		}
-		errCh <- err
-	}()
-
-	// Target → Client
-	go func() {
-		_, err := io.Copy(protoConn, tcpConn)
-		errCh <- err
-	}()
-
-	// Wait for BOTH directions to complete (don't exit early on first error!)
-	// DO NOT listen to conn.Closed here - it will abort the wait loop prematurely!
-	var err1, err2 error
-	for i := 0; i < 2; i++ {
-		select {
-		case <-h.Ctx.Done():
-			tcpConn.Close()
-			protoConn.Close()
-			return protocol.ErrHandlerStopped
-
-		case <-conn.Closed:
-			tcpConn.Close()
-			protoConn.Close()
-			// Drain any remaining errors
-			select {
-			case <-errCh:
-			default:
-			}
-			return protocol.ErrNone
-
-		case err := <-errCh:
-			if err1 == nil {
-				err1 = err
-			} else {
-				err2 = err
-			}
-		}
+	err := protocol.Forward(tcpConn, conn.ProtocolConn())
+	if err != nil {
+		h.SendClose(conn.ID, protocol.ErrConnectionClosed)
+		return protocol.ErrConnectionClosed
 	}
-
-	// Both directions finished - NOW it's safe to close
-	tcpConn.Close()
-	protoConn.Close()
-
-	// Check for errors (ignore normal EOF and closed connections)
-	for _, err := range []error{err1, err2} {
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-			// Use helper to map network errors to protocol errors
-			if errCode := protocol.MapNetError(err); errCode != protocol.ErrTransportClosed {
-				return errCode
-			}
-		}
-	}
-
+	h.SendClose(conn.ID, protocol.ErrNone)
 	return protocol.ErrNone
 }

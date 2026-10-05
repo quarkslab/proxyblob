@@ -200,6 +200,17 @@ func (c *jsConn) Close() error {
 
 func (c *jsConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
 func (c *jsConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
-func (c *jsConn) SetDeadline(t time.Time) error      { return nil }
-func (c *jsConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *jsConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *jsConn) SetDeadline(t time.Time) error      { return errors.ErrUnsupported }
+func (c *jsConn) SetReadDeadline(t time.Time) error  { return errors.ErrUnsupported }
+func (c *jsConn) SetWriteDeadline(t time.Time) error { return errors.ErrUnsupported }
+
+// CloseWrite preserves the read side while asking the JS host to send FIN.
+func (c *jsConn) CloseWrite() error {
+	select {
+	case <-c.closed:
+		return net.ErrClosed
+	default:
+	}
+	c.socket.Call("end")
+	return nil
+}
