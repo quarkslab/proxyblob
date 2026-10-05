@@ -36,11 +36,11 @@ func (h *SocksHandler) Start(address string) {
 	go h.ReceiveLoop()
 }
 
-// Stop gracefully terminates the handler, closing all active connections
+// Stop aborts the handler, closing all active connections
 // and canceling the context.
 func (h *SocksHandler) Stop() {
 	h.CloseAllConnections()
-	h.Cancel()
+	h.Abort()
 }
 
 // OnNew handles new connection requests by initializing it and
@@ -54,9 +54,16 @@ func (h *SocksHandler) OnNew(connectionID uuid.UUID, data []byte) byte {
 	// Create new connection
 	conn := protocol.NewConnection(connectionID, h.Ctx.Done())
 	h.Connections.Store(conn.ID, conn)
+	if h.Ctx.Err() != nil {
+		conn.Close()
+		h.Connections.Delete(conn.ID)
+		return protocol.ErrHandlerStopped
+	}
 
 	// Create the virtual protocol connection
-	conn.SetProtocolConn(protocol.NewProtocolConn(h.Ctx, connectionID, h.BaseHandler))
+	if !conn.SetProtocolConn(protocol.NewProtocolConn(h.Ctx, connectionID, h.BaseHandler)) {
+		return protocol.ErrConnectionClosed
+	}
 	conn.StartDelivery()
 
 	// Send ACK and process in a goroutine so ReceiveLoop never blocks on aznet writes
@@ -106,15 +113,7 @@ func (h *SocksHandler) OnData(connectionID uuid.UUID, data []byte) byte {
 // OnClose cleans up resources associated with a connection.
 // It is safe to call multiple times.
 func (h *SocksHandler) OnClose(connectionID uuid.UUID, errorCode byte) byte {
-	value, ok := h.Connections.Load(connectionID)
-	if !ok {
-		return protocol.ErrNone // Connection already removed, nothing to do
-	}
-	conn := value.(*protocol.Connection)
-	conn.Close()
-
-	h.Connections.Delete(connectionID)
-	return protocol.ErrNone
+	return h.PeerClose(connectionID, errorCode)
 }
 
 // processConnection handles the SOCKS5 protocol flow for a single connection.

@@ -35,6 +35,7 @@ const (
 	CmdAck                   // Acknowledge connection
 	CmdData                  // Transfer data
 	CmdClose                 // Terminate connection
+	CmdEOF                   // End only the sender's data direction (coordinated rollout)
 )
 
 // Protocol packet field sizes in bytes.
@@ -119,7 +120,7 @@ func ParseNext(buf []byte) (*Packet, int, error) {
 	}
 
 	command := buf[0]
-	if command < CmdNew || command > CmdClose {
+	if command < CmdNew || command > CmdEOF {
 		return nil, 0, ErrMalformedPacket
 	}
 

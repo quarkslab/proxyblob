@@ -7,7 +7,6 @@ package proxy
 import (
 	"context"
 	"errors"
-	"io"
 	"net"
 	"proxyblob/pkg/protocol"
 	"sync"
@@ -90,14 +89,14 @@ func (s *ProxyServer) StopListening() {
 // Start may be called later without creating a second reader.
 func (s *ProxyServer) StartReceiving() { s.receiveOnce.Do(func() { go s.ReceiveLoop() }) }
 
-// Stop gracefully terminates the proxy server by closing all active
+// Stop aborts pending I/O and terminates the proxy server by closing all active
 // connections, canceling the handler's context, and stopping the listener.
 func (s *ProxyServer) Stop() {
 	s.stopOnce.Do(func() {
 		s.lifecycleMu.Lock()
 		defer s.lifecycleMu.Unlock()
 		s.CloseAllConnections()
-		s.Cancel()
+		s.Abort()
 		if s.listener != nil {
 			s.listener.Close()
 			s.listener = nil
@@ -126,9 +125,11 @@ func (s *ProxyServer) OnAck(connectionID uuid.UUID, data []byte) byte {
 	}
 
 	// Create the virtual protocol connection (marks connection as established)
-	conn.SetProtocolConn(protocol.NewProtocolConn(s.Ctx, connectionID, s.BaseHandler))
+	if !conn.SetProtocolConn(protocol.NewProtocolConn(s.Ctx, connectionID, s.BaseHandler)) {
+		return protocol.ErrConnectionClosed
+	}
 	conn.StartDelivery()
-	conn.LastActivity = time.Now()
+
 	return protocol.ErrNone
 }
 
@@ -140,7 +141,6 @@ func (s *ProxyServer) OnData(connectionID uuid.UUID, data []byte) byte {
 		return protocol.ErrConnectionNotFound
 	}
 	conn := value.(*protocol.Connection)
-	conn.LastActivity = time.Now()
 
 	// The connection is only ready to receive data once OnAck has created the
 	// virtual protocol connection. Dropping the payload here would be silent
@@ -161,14 +161,7 @@ func (s *ProxyServer) OnData(connectionID uuid.UUID, data []byte) byte {
 // OnClose handles connection termination from agents. It cleans up the
 // connection state.
 func (s *ProxyServer) OnClose(connectionID uuid.UUID, errorCode byte) byte {
-	value, ok := s.Connections.Load(connectionID)
-	if !ok {
-		return protocol.ErrNone // Connection already removed, nothing to do
-	}
-	conn := value.(*protocol.Connection)
-	conn.Close()
-	s.Connections.Delete(connectionID)
-	return protocol.ErrNone
+	return s.PeerClose(connectionID, errorCode)
 }
 
 // cleanupConnection closes all connection resources and removes from connection map.
@@ -243,6 +236,7 @@ func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Con
 		s.lifecycleMu.Unlock()
 		return
 	}
+	proxyConn.AttachDestination(clientConn)
 	s.Connections.Store(proxyConn.ID, proxyConn)
 	s.lifecycleMu.Unlock()
 
@@ -273,49 +267,13 @@ func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Con
 		// Agent acknowledged connection.
 	}
 
-	// 3. Connection established, start bidirectional forwarding using io.Copy.
-	// Load the virtual connection once; it is stable for the connection's life.
-	protoConn := proxyConn.ProtocolConn()
-	errCh := make(chan error, 2)
-
-	// Client → Agent
-	go func() {
-		_, err := io.Copy(protoConn, clientConn)
-		errCh <- err
-	}()
-
-	// Agent → Client
-	go func() {
-		_, err := io.Copy(clientConn, protoConn)
-		errCh <- err
-	}()
-
-	// Wait for BOTH directions to complete before cleaning up
-	var err1, err2 error
-	for i := 0; i < 2; i++ {
-		select {
-		case <-s.Ctx.Done():
-			s.cleanupConnection(connID, clientConn, proxyConn)
-			return
-		case <-proxyConn.Closed:
-			s.cleanupConnection(connID, clientConn, proxyConn)
-			return
-		case err := <-errCh:
-			if err1 == nil {
-				err1 = err
-			} else {
-				err2 = err
-			}
-		}
+	// Forward owns both copy lifetimes and propagates directional EOF.
+	err := protocol.Forward(proxyConn.ProtocolConn(), clientConn)
+	if err == nil {
+		s.SendClose(connID, protocol.ErrNone)
 	}
-
-	// Both directions finished - NOW clean up
 	s.cleanupConnection(connID, clientConn, proxyConn)
-
-	// Log errors if any
-	for _, err := range []error{err1, err2} {
-		if err != nil && !errors.Is(err, io.EOF) {
-			log.Debug().Err(err).Str("conn_id", connID.String()).Msg("Connection closed with error")
-		}
+	if err != nil {
+		log.Debug().Err(err).Str("conn_id", connID.String()).Msg("Stream forwarding failed")
 	}
 }
