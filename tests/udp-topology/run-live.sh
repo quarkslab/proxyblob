@@ -32,7 +32,7 @@ docker network create "$prefix-back" >/dev/null
 docker run -d --name "$prefix-proxy" --network "$prefix-front" --network-alias proxy-front \
   -e "LIVE_DRIVER=$driver" -e "LIVE_PREFIX=$prefix" \
   --mount "type=bind,src=$AZNET_LIVE_CONFIG,dst=/config.json,readonly" \
-  --mount "type=bind,src=$output/signals,dst=/signals,readonly" \
+  --mount "type=bind,src=$output/signals,dst=/signals" \
   --mount "type=bind,src=$output/state,dst=/state" \
   --mount "type=bind,src=$output/harness,dst=/harness,readonly" "$image" /harness live proxy >/dev/null
 docker network connect bridge "$prefix-proxy"

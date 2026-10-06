@@ -123,7 +123,8 @@ func liveRun(role string) {
 		}()
 		token, err := listener.(*aznet.Listener).ConnectionString()
 		liveCheck("bootstrap SAS", err)
-		liveCheck("publish SAS file", os.WriteFile("/state/connection", []byte(token), 0600))
+		liveCheck("write SAS file", os.WriteFile("/state/connection.tmp", []byte(token), 0600))
+		liveCheck("publish complete SAS file", os.Rename("/state/connection.tmp", "/state/connection"))
 		conn, err := listener.Accept()
 		liveCheck("Azure accept", err)
 		fmt.Println("PASS real Azure listener accepted session")
@@ -134,8 +135,17 @@ func liveRun(role string) {
 			panic("SOCKS listener did not start")
 		}
 		for {
-			if _, err := os.Stat("/signals/close-tunnel"); err == nil {
+			for i := 0; i < 3; i++ {
+				name := fmt.Sprintf("/signals/control-close-%d", i)
+				if raw, err := os.ReadFile(name); err == nil {
+					assertRelayClosed(string(raw))
+					liveCheck("acknowledge relay closure", os.Rename(name, name+".ok"))
+				}
+			}
+			if raw, err := os.ReadFile("/signals/close-tunnel"); err == nil {
 				liveClose("close active Azure tunnel", conn.Close())
+				server.Stop()
+				assertRelayClosed(string(raw))
 				return
 			}
 			if _, err := os.Stat("/state/stop"); err == nil {
@@ -190,6 +200,26 @@ func liveRun(role string) {
 		return
 	}
 	panic("unknown live role")
+}
+
+// Rebinding the advertised port in the still-running proxy namespace proves
+// that the relay socket was released, even if its dead tunnel could not reply.
+func assertRelayClosed(address string) {
+	addr, err := net.ResolveUDPAddr("udp4", address)
+	liveCheck("relay address", err)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		socket, err := net.ListenUDP("udp4", addr)
+		if err == nil {
+			socket.Close()
+			fmt.Println("PASS proxy independently rebound closed relay port")
+			return
+		}
+		if time.Now().After(deadline) {
+			panic("relay port remains bound after close")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // Only resources inside this invocation's random prefix may be reclaimed.

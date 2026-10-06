@@ -149,7 +149,9 @@ port must not elicit replies; a following byte-identical valid probe must
 succeed. A separate association sends 100 32-KiB payloads without reading while
 healthy associations progress. This is a pressure/liveness check, not a claim
 about exact drop counts, OS buffering or a measured memory ceiling. Closing
-control connections and an active Azure tunnel must close their client relays.
+control connections and an active Azure tunnel must close their client relays;
+the still-running proxy independently rebinds each advertised UDP port to prove
+the socket was released.
 
 aznet's 250-ms best-effort FIN or the handler's deliberate deadline interruption
 can report an expected abort/deadline at tunnel shutdown. Those results are

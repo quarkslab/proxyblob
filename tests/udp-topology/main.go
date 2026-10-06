@@ -23,6 +23,8 @@ func must(err error) {
 	}
 }
 func main() {
+	watchdog := time.AfterFunc(12*time.Minute, func() { panic("topology harness exceeded 12-minute deadline") })
+	defer watchdog.Stop()
 	if len(os.Args) == 3 && os.Args[1] == "live" {
 		liveRun(os.Args[2])
 		return
@@ -84,8 +86,8 @@ func echo(network, address string) {
 func associate() (net.Conn, *net.UDPAddr) {
 	var control net.Conn
 	var err error
-	for i := 0; i < 1800; i++ {
-		control, err = net.Dial("tcp", "proxy-front:1080")
+	for deadline := time.Now().Add(90 * time.Second); time.Now().Before(deadline); {
+		control, err = net.DialTimeout("tcp", "proxy-front:1080", time.Second)
 		if err == nil {
 			break
 		}
@@ -116,6 +118,10 @@ func associate() (net.Conn, *net.UDPAddr) {
 		panic(fmt.Sprintf("relay %v is not proxy %v", relay, ips))
 	}
 	return control, relay
+}
+func signal(name, address string) {
+	must(os.WriteFile(name+".tmp", []byte(address), 0600))
+	must(os.Rename(name+".tmp", name))
 }
 func client() {
 	// This reachable-only-from-back address proves Docker network separation.
@@ -236,6 +242,20 @@ func client() {
 		fmt.Printf("PASS client=%d rejects FRAG/RSV/truncated headers and alternate source port; healthy traffic recovers\n", clientID)
 		control.Close()
 		time.Sleep(time.Second)
+		if os.Getenv("LIVE_TEST") == "1" {
+			name := fmt.Sprintf("/signals/control-close-%d", clientID)
+			signal(name, relay.String())
+			deadline := time.Now().Add(15 * time.Second)
+			for {
+				if _, err := os.Stat(name + ".ok"); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					panic("proxy did not verify relay port release")
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
 		reject(valid, socket)
 		fmt.Printf("PASS client=%d relay stops after control close\n", clientID)
 		socket.Close()
@@ -246,7 +266,7 @@ func client() {
 		socket, err := net.ListenUDP("udp4", &net.UDPAddr{})
 		must(err)
 		defer socket.Close()
-		must(os.WriteFile("/signals/close-tunnel", []byte("close"), 0600))
+		signal("/signals/close-tunnel", relay.String())
 		control.SetReadDeadline(time.Now().Add(30 * time.Second))
 		if _, err := control.Read(make([]byte, 1)); err != io.EOF {
 			panic("control did not close on tunnel loss")
