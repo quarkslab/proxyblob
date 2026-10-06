@@ -52,8 +52,8 @@ and the Azure tunnel.
 | Queue | 3 pass, 94,208 bytes each, both replies and half-close | 3 pass | 45 pass | 0 before and after cleanup check |
 | Table | 3 pass, 94,208 bytes each, both replies and half-close | 3 pass | 45 pass | 0 before and after cleanup check |
 
-UDP covers three concurrent clients and IPv4/IPv6/domain destinations, empty
-payloads through the maximum supported complete SOCKS packet, malformed/source
+UDP holds three associations open simultaneously and exercises their echo cases
+sequentially across IPv4/IPv6/domain destinations, with empty payloads through the maximum supported complete SOCKS packet, malformed/source
 rejection, a stalled association beside healthy traffic, and relay release on
 control/tunnel close. These tests verify packet identity and liveness; they do
 not establish a loss rate, whole-process memory ceiling or full SOCKS conformance.
