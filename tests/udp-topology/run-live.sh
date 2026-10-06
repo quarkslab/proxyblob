@@ -24,7 +24,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 arch=$(docker version --format '{{.Server.Arch}}')
-GOWORK=off GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -mod=readonly -o "$output/harness" ./tests/udp-topology
+live_work=${PROXYBLOB_LIVE_GOWORK:-off}
+GOWORK="$live_work" go list -mod=readonly -m github.com/atsika/aznet
+GOWORK="$live_work" GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -mod=readonly -o "$output/harness" ./tests/udp-topology
 if ! docker image inspect "$image" >/dev/null 2>&1; then docker pull "$image"; fi
 mkdir "$output/state" "$output/signals"
 # Client network is internal. Only proxy and agent have Azure HTTPS egress.

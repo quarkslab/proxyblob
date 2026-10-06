@@ -156,7 +156,7 @@ func TestFlowWorkloads(t *testing.T) {
 					p50 = samples[len(samples)/2]
 					p95 = samples[(len(samples)-1)*95/100]
 				}
-				t.Logf("window=%d concurrency=%d mode=%s reserved_per_endpoint=%d peak_heap_delta=%d p50=%s p95=%s bytes=%d elapsed=%s", window, concurrency, mode, window*concurrency, peak.Load()-before.HeapAlloc, p50, p95, transferred.Load(), elapsed)
+				t.Logf("window=%d concurrency=%d mode=%s reserved_per_endpoint=%d peak_heap_delta=%d alloc_bytes=%d allocations=%d p50=%s p95=%s bytes=%d elapsed=%s", window, concurrency, mode, window*concurrency, peak.Load()-before.HeapAlloc, last.TotalAlloc-before.TotalAlloc, last.Mallocs-before.Mallocs, p50, p95, transferred.Load(), elapsed)
 			})
 		}
 	}
@@ -180,7 +180,7 @@ func TestFlowStorageLatency(t *testing.T) {
 	if os.Getenv("PROXYBLOB_MEASURE_LATENCY") == "" {
 		t.Skip("opt-in transport request-cost comparison")
 	}
-	for _, batch := range []int{64 << 10, 128 << 10} {
+	for _, batch := range []int{64 << 10, 128 << 10, 512 << 10} {
 		for _, concurrency := range []int{1, 16} {
 			t.Run(fmt.Sprintf("batch%d/streams%d", batch, concurrency), func(t *testing.T) {
 				cfg := DefaultFlowConfig()
