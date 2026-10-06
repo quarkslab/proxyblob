@@ -19,6 +19,7 @@ func TestStreamErrorCodePreservesFailuresAlongsideShutdown(t *testing.T) {
 		want byte
 	}{
 		{"success", nil, ErrNone},
+		{"shutdown after peer reset", &net.OpError{Op: "close", Net: "tcp", Err: &os.SyscallError{Syscall: "shutdown", Err: syscall.ENOTCONN}}, ErrStreamNotConnected},
 		{"explicit close", net.ErrClosed, ErrStreamCanceled},
 		{"canceled", context.Canceled, ErrStreamCanceled},
 		{"wrapped closed pipe", fmt.Errorf("copy: %w", io.ErrClosedPipe), ErrStreamCanceled},
@@ -49,6 +50,7 @@ func TestForwardPublishesOriginalFailureBeforeClosing(t *testing.T) {
 		want    byte
 	}{
 		{"reset", syscall.ECONNRESET, ErrStreamReset},
+		{"disconnected socket", syscall.ENOTCONN, ErrStreamNotConnected},
 		{"timeout", os.ErrDeadlineExceeded, ErrTransportTimeout},
 		{"broken pipe", syscall.EPIPE, ErrStreamBrokenPipe},
 		{"local close", net.ErrClosed, ErrStreamCanceled},

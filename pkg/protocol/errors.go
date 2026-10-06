@@ -146,9 +146,10 @@ func ErrorCode(err error) byte {
 // ErrStreamCanceled identifies an explicit local shutdown, not a failed transfer.
 // Older proxies retain this unknown numeric code as a warning.
 const (
-	ErrStreamCanceled   byte = 59
-	ErrStreamReset      byte = 60
-	ErrStreamBrokenPipe byte = 61
+	ErrStreamCanceled     byte = 59
+	ErrStreamReset        byte = 60
+	ErrStreamBrokenPipe   byte = 61
+	ErrStreamNotConnected byte = 62
 )
 
 // StreamErrorCode classifies every cause in a joined forwarding error. An
@@ -178,6 +179,9 @@ func StreamErrorCode(err error) byte {
 	}
 	if errors.Is(err, syscall.ECONNRESET) {
 		return ErrStreamReset
+	}
+	if errors.Is(err, syscall.ENOTCONN) {
+		return ErrStreamNotConnected
 	}
 	if errors.Is(err, syscall.EPIPE) {
 		return ErrStreamBrokenPipe

@@ -100,6 +100,7 @@ func TestStreamDiagnosticSeverity(t *testing.T) {
 		{protocol.ErrTransportError, "warn"},
 		{protocol.ErrTransportTimeout, "warn"},
 		{protocol.ErrStreamReset, "warn"},
+		{protocol.ErrStreamNotConnected, "warn"},
 		{protocol.ErrStreamBrokenPipe, "warn"},
 	} {
 		var output bytes.Buffer
