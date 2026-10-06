@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 : "${AZNET_LIVE_CONFIG:?Set AZNET_LIVE_CONFIG to the existing account-key configuration path}"
+# Opt in to public DNS queries through SOCKS UDP with LIVE_DNS=1.
 driver=${1:-azblob}
 case "$driver" in azblob|azqueue|aztable) ;; *) exit 2;; esac
 output=$(mktemp -d)
@@ -42,7 +43,7 @@ docker run -d --name "$prefix-agent" --network "$prefix-back" \
   --mount "type=bind,src=$output/harness,dst=/harness,readonly" "$image" /harness live agent >/dev/null
 agent_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$prefix-agent")
 set +e
-docker run --name "$prefix-client" --network "$prefix-front" -e "AGENT_IP=$agent_ip" -e LIVE_TEST=1 \
+docker run --name "$prefix-client" --network "$prefix-front" -e "AGENT_IP=$agent_ip" -e LIVE_TEST=1 -e "LIVE_DNS=${LIVE_DNS:-0}" \
   --mount "type=bind,src=$output/signals,dst=/signals" \
   --mount "type=bind,src=$output/harness,dst=/harness,readonly" "$image" /harness client
 status=$?

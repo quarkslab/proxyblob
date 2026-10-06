@@ -137,6 +137,9 @@ func client() {
 	}
 
 	fmt.Println("PASS direct client-to-agent UDP is blocked across isolated networks")
+	if os.Getenv("LIVE_DNS") == "1" {
+		dnsClient()
+	}
 	if os.Getenv("LIVE_TEST") == "1" {
 		slow, relay := associate()
 		defer slow.Close()
