@@ -122,3 +122,42 @@ extension is an explicit unsupported-host resolution error; such packets are
 dropped. Validate and deploy the production resolver and dual-stack socket
 capabilities before promising parity. No production deployment is part of this
 change.
+
+## Opt-in live Azure validation
+
+`AZNET_LIVE_CONFIG=/absolute/path/to/config.json tests/udp-topology/run-live.sh azblob`
+uses real aznet `Listen`/`Dial`, bootstrap SAS, session credentials and Azure
+storage for the tunnel. Repeat with `azqueue` and `aztable`. The configuration
+must contain an HTTPS Azure account-key listener for the selected driver. The
+script builds the committed module dependency with `GOWORK=off -mod=readonly`.
+It creates only random, invocation-prefixed bootstrap/session resources and
+removes them on exit. No existing listener namespace is used. Run only against
+an account where these temporary resource operations are authorized.
+
+The client network is internal; proxy and agent have separate Azure HTTPS
+network access. A direct client-to-agent UDP probe must fail. Only the proxy
+and cleanup container receive the read-only configuration mount; the agent
+receives a private bootstrap-SAS file. The client receives neither. No endpoint,
+credential, SAS or raw SDK error is logged. Logs contain payload sizes,
+round-trip latency and aznet's sanitized per-operation HTTP request counters.
+The temporary handoff files and Docker resources are removed on exit.
+
+The client exercises three simultaneous associations across IPv4, IPv6 and
+agent-resolved domains, including zero payload and the full 65,507-byte SOCKS
+packet bound. Invalid RSV/FRAG, truncated headers and a different UDP source
+port must not elicit replies; a following byte-identical valid probe must
+succeed. A separate association sends 100 32-KiB payloads without reading while
+healthy associations progress. This is a pressure/liveness check, not a claim
+about exact drop counts, OS buffering or a measured memory ceiling. Closing
+control connections and an active Azure tunnel must close their client relays;
+the still-running proxy independently rebinds each advertised UDP port to prove
+the socket was released.
+
+aznet's 250-ms best-effort FIN or the handler's deliberate deadline interruption
+can report an expected abort/deadline at tunnel shutdown. Those results are
+reported separately from successful datagram delivery. Unexpected close errors
+fail the run. Normal teardown must leave no resources under the invocation's
+prefix: an independent Azure catalog query checks this, reclaims any leftovers,
+and fails if it had to reclaim anything. This verifies storage cleanup, not
+private goroutine/map counts. Live native results do not establish WASM/browser
+networking support or full SOCKS conformance.
