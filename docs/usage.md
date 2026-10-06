@@ -48,8 +48,8 @@ Changing configuration does not renew an existing session. Bootstrap expiry alon
 ## Build or deploy an agent
 
 ```sh
-GOWORK=off GOFLAGS=-mod=readonly make agent
-GOWORK=off GOFLAGS=-mod=readonly make wasm
+make agent
+make wasm
 ```
 
 An optional `TOKEN='<generated-connection-string>'` embeds the bearer credential in the output binary. Use it only when that artifact and build command are protected. Otherwise provide `-c` or `CONNECTION_STRING` at runtime.

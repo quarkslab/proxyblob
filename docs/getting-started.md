@@ -9,10 +9,10 @@ Install Git, Make and Go with automatic toolchain selection enabled. The module 
 ```sh
 git clone https://github.com/quarkslab/proxyblob.git
 cd proxyblob
-GOWORK=off GOFLAGS=-mod=readonly make
+make
 ```
 
-Expected files: `proxy`, `agent`, `agent.wasm`. The default build uses the committed published aznet dependency; no sibling checkout or workspace is required. To build only native binaries, use `make proxy agent` with the same environment variables.
+Expected files: `proxy`, `agent`, `agent.wasm`. The default build uses the committed published aznet dependency; no sibling checkout or workspace is required. To build only native binaries, use `make proxy agent`.
 
 Bun is not needed to run the native binaries. The optional WASM test host uses Bun 1.4.2; see [WASM setup](js-socket-host.md).
 
@@ -120,7 +120,7 @@ Copy the full ID from the agent list or use completion. The prompt then shows it
 In a third shell on the proxy machine, substituting the reported port if needed:
 
 ```sh
-curl --fail --show-error --max-time 60 --socks5-hostname 127.0.0.1:1080 https://example.com/
+curl --noproxy "" --fail --show-error --max-time 60 --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
 Expected result: the Example Domain HTML page. `--socks5-hostname` sends the target hostname to the agent for resolution. This tests a TCP CONNECT conversation; it is not a UDP DNS test.

@@ -7,7 +7,7 @@
 - Session authorization expiry display and bounded lifecycle cleanup.
 - Socket host v2 and actual Bun 1.4.2 WASM runtime validation.
 - Published aznet directional Blob I/O fix and measured performance baselines.
-- Coordinated wire-version-3 rollout required; see upgrade notes above.
+- Coordinated wire-version-3 rollout required; see the [upgrade notes](docs/release-validation.md).
 
 **ProxyBlob v2.2 - 03/08/2026:**
 
