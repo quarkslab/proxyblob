@@ -1,165 +1,110 @@
 # ProxyBlob v2
 
-🎉 New release ! _see [CHANGELOG](#changelog)_ 🎉
-
 <p align="center">
   <img src="docs/proxyblob-v2.png" alt="ProxyBlob v2 logo" width="300"/>
 </p>
-<p align="center"><i>SOCKS proxy over Azure Storage service</i></p>
+<p align="center"><i>SOCKS proxy over Azure Storage services</i></p>
 
 ## Overview
 
-ProxyBlob is a tool designed to create SOCKS proxy tunnels through Azure Storage services. This is particularly useful in environments where direct network connectivity is restricted but `*.core.windows.net` is accessible.
+ProxyBlob connects a local SOCKS5 proxy to an agent through Azure Blob, Queue or
+Table Storage, using [aznet](https://github.com/atsika/aznet). The agent opens
+connections to destination services from its network. Multiple logical streams
+share one tunnel, with finite memory reservations and backpressure.
 
-The system consists of two components:
+The interactive proxy manages listeners and agents. Native agents support
+CONNECT, UDP ASSOCIATE and BIND. A WASM agent is also available for a JavaScript
+host implementing the required socket contract.
 
-1. **Proxy Server**: Runs on your local machine or a remote server and provides a SOCKS interface for your applications
-2. **Agent**: Runs inside the target network and communicates with the proxy through Azure Storage services
+## Capabilities
 
-## Features
+| Capability | Native agent | WASM agent |
+|---|---|---|
+| TCP CONNECT, IPv4/IPv6/domain | Supported | Supported with socket host v2 |
+| UDP ASSOCIATE through the cloud tunnel | Supported | Supported with socket host v2; domains require `UDPResolve` |
+| BIND, both SOCKS replies | Supported | Explicit command-not-supported reply |
+| Authentication | NoAuth | NoAuth |
+| SOCKS UDP fragmentation | Unsupported; nonzero FRAG is dropped | Same |
 
-- SOCKS5 protocol (CONNECT and UDP ASSOCIATE)
-- Communication through Azure Storage services (thanks to [aznet](https://github.com/atsika/aznet)!)
-- Interactive CLI with auto-completion
-- Multiple agent management
-- Local or remote proxy server
-- WebAssembly (WASM) agent for deployment in JavaScript runtimes (Bun, Node.js, etc.)
+UDP clients send to the relay address returned by the **proxy**, not directly to
+the agent. The agent resolves target domains and exchanges destination datagrams.
+UDP overload drops complete packets within finite bounds; admitted TCP streams
+pause when receive credit is exhausted. Ordered delivery and half-close are
+preserved. See [UDP tunneling](docs/udp-tunnel.md), [native BIND](docs/socks-bind.md)
+and [flow control](docs/flow-control.md).
 
-## Prerequisites
+BIND advertises an agent interface address selected from the route to the expected
+peer. It does not discover public NAT mappings or open firewall ports. The client
+must wait for the second reply before sending data. UDP clients likewise need
+reachability to the proxy's returned interface and ephemeral port.
 
-- Go 1.25 or higher
-- An Azure Storage Account
+## Prerequisites and storage
 
-### Storage Account
+- Go 1.25 or newer; the validation toolchains are recorded in
+  [release validation](docs/release-validation.md).
+- An Azure account with the selected storage service, or Azurite for local tests.
+- For WASM, a compatible JavaScript socket host; compilation alone is insufficient.
 
-#### Azure
+A **Standard general-purpose v2 (`StorageV2`)** account supports Blob, Queue and
+Table. Premium Block Blob accounts support Blob operations, including append
+blobs, but do not provide Queue or Table. Premium is not required. Choose account
+location and service from measurements in your deployment; there is no universal
+cost or speed ranking. See Microsoft's [storage account types](https://learn.microsoft.com/en-us/azure/storage/common/storage-account-overview).
 
-In order to use ProxyBlob, you will need an Azure Subscription to create an Azure Storage Account. Once you have a subscription, you can create a storage account in the Azure Portal or using the Azure CLI.
+For example, after choosing a globally unique account name:
 
-Here are the steps to create a storage account using the Azure Portal:
-
-1. Go to [https://portal.azure.com](https://portal.azure.com)
-2. Login with your Azure account
-3. In the top Search bar, type "Storage accounts"
-4. Click on "+ Create"
-5. Fill in the required fields
-6. Click on "Review + create"
-7. Click on "Create"
-
-Storage account settings:
-
-- **Subscription**: Select your Azure subscription
-- **Resource Group**: Create new Resource Group or select existing
-- **Storage account name**: Choose a name for your storage account
-- **Location**: Select a location near you
-- **Performance**: Premium ⚠️ we will require low latency and high throughput
-- **Premium account type**: Block blobs (high transaction rates)
-- **Redundancy**: Locally-redundant Storage (LRS)
-
-<p align="center">
-  <img src="docs/create-storage-account.png" alt="Create Storage Account" width="600"/>
-</p>
-
-
-Once the deployment is complete, you will see the newly created storage account in the list.
-
-<p align="center">
-  <img src="docs/list-storage-accounts.png" alt="List of Storage accounts" />
-</p>
-
-Finally, click on "Security + networking" and then "Access keys" to get the storage account key.
-
-<p align="center">
-  <img src="docs/access-keys.png" alt="Access Keys" />
-</p>
-
-Here are the steps to create a storage account using the Azure CLI:
-
-```bash
-# Login to Azure
+```sh
 az login
-
-# Create a resource group
-az group create --name "proxyblob-resource-group" --location "Central US"
-
-# Create a storage account
-az storage account create --name "myproxyblob" --resource-group "proxyblob-resource-group" --location "Central US" --sku "Premium_LRS" --kind BlockBlobStorage
-
-# Get the storage account key
-az storage account keys list --account-name "myproxyblob" --output table
+az group create --name proxyblob-resource-group --location centralus
+az storage account create --name YOUR_UNIQUE_ACCOUNT --resource-group proxyblob-resource-group --location centralus --sku Standard_LRS --kind StorageV2
+az storage account keys list --account-name YOUR_UNIQUE_ACCOUNT --output table
 ```
 
-You should see displayed the storage account keys.
+For local Blob, Queue and Table testing, expose all three Azurite services:
 
-#### Azurite
-
-If you want to test the tool, you can also use [Azurite](https://github.com/Azure/Azurite), a lightweight server clone of Azure Storage that can be run locally. To install Azurite, I recommend using either [Visual Studio Code extension](https://marketplace.visualstudio.com/items?itemName=Azurite.azurite) or [Docker](https://hub.docker.com/r/microsoft/azure-storage-azurite).
-
-For the extension, installation is straightforward:
-
-1. Go to the Extensions tab
-2. Search for `Azurite.azurite`
-3. Click "Install"
-
-You should see down right of your editor 3 buttons like this:
-
-```
-[Azurite Table Service] [Azurie Queue Service] [Azurite Blob Service]
+```sh
+docker run --rm -p 127.0.0.1:10000:10000 -p 127.0.0.1:10001:10001 -p 127.0.0.1:10002:10002 mcr.microsoft.com/azure-storage/azurite:3.34.0
 ```
 
-Press on the `[Azurite Blob Service]` and the service should be running.
+The [example configuration](example_config.json) includes the public Azurite
+`devstoreaccount1` credentials. Azurite validates supported emulator behavior;
+it does not establish Azure service latency or every service-specific failure.
 
-For Docker, you will have to pull the image and run it:
+## Build
 
-```bash
-docker pull mcr.microsoft.com/azure-storage/azurite
-docker run -p 10000:10000 mcr.microsoft.com/azure-storage/azurite
-```
-
-The default storage account name is `devstoreaccount1` and the account key is `Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==`.
-
-## Installation
-
-```bash
-# Clone the repository
+```sh
 git clone https://github.com/quarkslab/proxyblob
 cd proxyblob
-
-# Build all components
-make
+GOWORK=off GOFLAGS=-mod=readonly make
 ```
 
-This will produce the following binaries:
+This builds `proxy`, `agent` and `agent.wasm` from package targets using the
+committed published aznet dependency. There is no local replacement required.
+Individual targets and an optional embedded connection string are supported:
 
-- `proxy` - the proxy server running on your machine
-- `agent` - the agent running on the target
-- `agent.wasm` - the agent compiled for WebAssembly
-
-The WASM agent requires the JS host runtime to expose two global functions:
-
-```js
-// Open a TCP connection to host:port, call callbacks on events
-TCPDial(host, port, onConnect, onData, onClose, onError)
-
-// Bind a UDP socket on a random port, call callbacks on events
-UDPListen(onBind, onData, onError)
+```sh
+make proxy
+make agent
+make wasm
+make agent TOKEN='<generated-connection-string>'
+make wasm TOKEN='<generated-connection-string>'
 ```
 
-The runner is responsible for implementing these using the runtime's native APIs (e.g. Bun: `Bun.connect` / `Bun.udpSocket`, Node.js: `net` / `dgram`).
+The WASM runner must load `wasm_exec.js` from the Go toolchain used to build the
+binary. It must advertise `globalThis.ProxyBlobSocketHostVersion = 2`, implement
+`TCPDial` and `UDPListen`, and implement `UDPResolve` for domain UDP destinations.
+These factories return immediate disposable handles; callbacks, bounded queues,
+read grants, write backpressure and half-close follow the
+[JS socket host contract](docs/js-socket-host.md). The old two-function example
+without those semantics is insufficient.
 
-You can also build targets individually:
+The repository provides a **Bun 1.4.2 test host**, not a production runner.
+Node runs supplementary deterministic adapter tests. Production browser,
+WebSocket-bridge and other runtime hosts require their own validation.
 
-```bash
-make proxy                        # proxy server only
-make agent                        # native agent only
-make wasm                         # WASM agent only
-make agent TOKEN=<conn-string>    # native agent with embedded connection string
-make wasm TOKEN=<conn-string>     # WASM agent with embedded connection string
-```
+## Configuration and authorization
 
-## Configuration
-
-Create a `config.json` file based on the [example](example_config.json) with your Azure Storage credentials:
+Create `config.json` using [example_config.json](example_config.json). For Azure:
 
 ```json
 {
@@ -167,263 +112,146 @@ Create a `config.json` file based on the [example](example_config.json) with you
     {
       "name": "blob-listener",
       "driver": "azblob",
-      "address": "https://proxyblob.blob.core.windows.net",
-      "storage_account": "proxyblob",
-      "storage_account_key": "your_account_key"
-    },
-    {
-      "name": "queue-listener",
-      "driver": "azqueue",
-      "address": "http://127.0.0.1:10001",
-      "storage_account": "devstoreaccount1",
-      "storage_account_key": "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+      "session_duration": "24h",
+      "address": "https://YOUR_ACCOUNT.blob.core.windows.net",
+      "storage_account": "YOUR_ACCOUNT",
+      "storage_account_key": "YOUR_ACCOUNT_KEY"
     }
   ]
 }
-
 ```
 
-You can configure multiple listeners and manage them in the proxy CLI.
+Use `azqueue` with the Queue endpoint or `aztable` with the Table endpoint for
+the other drivers. Multiple listeners are supported. Protect this configuration:
+the proxy uses account credentials to issue narrower connection credentials.
+
+`new --duration 168h` controls **bootstrap connection-string validity**; seven
+days is the default. `session_duration` independently controls credentials for
+new sessions; its default is 24 hours and it accepts Go durations of at least one
+second. Expiring bootstrap authorization does not itself terminate an established
+session. Automatic credential renewal is not implemented.
+
+`agent ls` displays the actual issued session expiry in UTC and authorization
+remaining, or `unknown` when the transport provides no metadata. This countdown
+is informational: it is neither a liveness guarantee nor a rounded disconnect
+timer. Changing listener configuration does not renew existing sessions.
 
 ## Usage
 
-### Starting the Proxy Server
+Start the proxy:
 
-```bash
-./proxy -c my-config.json # if omitted, config.json is used by default
+```sh
+./proxy -c config.json
 ```
 
-This will start an interactive CLI with the following commands:
+Start a configured listener and generate a bootstrap connection string:
 
-```
-Commands:
-  agent     manage agents
-  clear     clear the screen
-  exit      exit the shell
-  help      use 'help [command]' for command help
-  listener  manage listeners
-  new       generate a new connection string for an agent
+```text
+proxyblob » listener start blob-listener
+proxyblob » new --duration 168h
 ```
 
-Once the proxy server is running, start a listener. The started listener automatically becomes the default for subsequent commands.
+Copy the generated string to the agent:
 
-```
-proxyblob » listener start blob-local-listener
-21:23:25 INF Aznet listener started and set as default addr=http://127.0.0.1:10000 driver=azblob listener_id=blob-local-listener
-```
-
-Then you can generate a connection string by using the `new` command.
-
-```
-proxyblob » new
-21:25:10 INF Connection string generated connection_string=YXpibG9ifGh0dHA6Ly8xMjcuMC4wLjE6MTAwMDAvZGV2c3RvcmVhY2NvdW50MT9oYW5kc2hha2U9YzJVOU1qQXlOaTB3TWkweE5sUXlNQ1V6UVRJMUpUTkJNVEJhSm5OcFp6MDRlR3ByVjJFeVNXdHhWWEJxUlU1cGJIVmtOVGhuWXpkNU5raDNXWEZNUmpZNVFrNDVaMUphT1ZNMEpUTkVKbk53UFdGamR5WnpjSEk5YUhSMGNITWxNa05vZEhSd0puTnlQV01tYzNROU1qQXlOaTB3TWkweE5WUXlNQ1V6UVRJd0pUTkJNVEJhSm5OMlBUSXdNalV0TVRFdE1EVSUzRCZ0b2tlbj1jMlU5TWpBeU5pMHdNaTB4TmxReU1DVXpRVEkxSlROQk1UQmFKbk5wWnowM2NXZ3dZVWgxV1dKTE1rcGlOVVYyVG5WTk1XdEpTMFJFVTFkVGNFWlllVXd5ZUV0dWRYaG9jVWc0SlRORUpuTndQWEpzSm5Od2NqMW9kSFJ3Y3lVeVEyaDBkSEFtYzNJOVl5WnpkRDB5TURJMkxUQXlMVEUxVkRJd0pUTkJNakFsTTBFeE1Gb21jM1k5TWpBeU5TMHhNUzB3TlElM0QlM0Q listener_id=blob-local-listener
+```sh
+./agent -c '<generated-connection-string>'
 ```
 
-Use the generated connection string with the agent (see below [Starting the Agent](#starting-the-agent)). If the agent connects successfully, you should see its identity (`user@host`) in the "Info" column when you list agents.
+Alternatively, run an agent built with the embedded string. Back in the proxy:
 
-```
+```text
 proxyblob » agent ls
-╭──────────────────────────────────────┬─────────────────┬──────────────────────┬────────────┬─────────────────────┬───────────╮
-│ AGENT ID                             │ INFO            │ LISTENER             │ PROXY PORT │ CONNECTED AT        │ LAST SEEN │
-├──────────────────────────────────────┼─────────────────┼──────────────────────┼────────────┼─────────────────────┼───────────┤
-│ 7b5af883-7cc7-45a4-8599-da906753005d │ atsika@mac.home │ blob-local-listener  │ 1080       │ 2026-02-15 21:50:04 │ 2m ago    │
-╰──────────────────────────────────────┴─────────────────┴──────────────────────┴────────────┴─────────────────────┴───────────╯
+proxyblob » agent select <agent-id>
+proxyblob » agent start
 ```
 
-Select the agent using `agent select <agent-id>` and start the proxy listener (by default it listens on localhost:1080) by using the `agent start` command.
+The SOCKS listener defaults to localhost port 1080. For example, an application
+can use SOCKS5 with agent-side target resolution:
 
-```
-proxyblob » agent select 7b5af883-7cc7-45a4-8599-da906753005d
-22:10:40 INF Agent selected agent_id=7b5af883-7cc7-45a4-8599-da906753005d
-7b5af883 » agent start
-22:10:46 INF Proxy started agent_id=7b5af883-7cc7-45a4-8599-da906753005d port=1080
+```sh
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
-You can now use for example [proxychains](https://github.com/rofl0r/proxychains-ng) to tunnel the traffic through the SOCKS proxy.
+Use `help`, `help agent` and `help listener` for command options. `agent rm`
+removes the selected agent and clears its prompt selection. Teardown is bounded;
+a reported delivery or cleanup error still requires attention. Do not interpret
+forced abort as proof that all pending data reached its destination.
 
-```bash
-proxychains xfreerdp /v:dc01.domain.local /u:Administrator
-```
-
-### Starting the Agent
-
-In order to run, the agent requires a connection string that can be generated using the proxy. You can pass it as an argument or directly embed it at compile-time.
-
-```bash
-# Via argument
-./agent -c <generated-connection-string>
-
-# Build the agent with embedded connection string
-make agent TOKEN=<generated-connection-string>
-./agent
-```
-
-## Architecture
-
-The communication flow works like this:
-
-1. The agent periodically polls an Azure Blob container for encoded packets in a request blob
-2. The proxy writes encoded packets to the Azure Blob container in a request blob
-3. When the agent finds a packet, it processes it and writes the response back to a response blob
-4. The proxy reads the response and maintains the SOCKS connection with client applications
-
-The global flow is the following:
+## Architecture and limits
 
 ```mermaid
-graph TB
-    %% Client applications
-    Client1[Client Application] -->|SOCKS5 Request| SocksServer
-    Client2[Web Browser] -->|SOCKS5 Request| SocksServer
-    
-    %% Proxy Server Components
-    subgraph "Proxy Server (Local Machine)"
-        SocksServer[SOCKS5 Server]
-        CLI[Interactive CLI]
-        ProxyHandler[Proxy Handler]
-        TransportP[Blob Transport]
-    end
-    
-    %% Connection between components
-    CLI -->|Commands| SocksServer
-    SocksServer -->|Process Request| ProxyHandler
-    ProxyHandler -->|Encode Packets| TransportP
-    TransportP -->|Receive Responses| ProxyHandler
-    ProxyHandler -->|Return Data| SocksServer
-    
-    %% Azure Blob Storage
-    subgraph "Azure Blob Storage"
-        RequestBlob[Request Blob]
-        ResponseBlob[Response Blob]
-    end
-    
-    %% Connection to Azure
-    TransportP -->|Write| RequestBlob
-    ResponseBlob -->|Read| TransportP
-    
-    %% Agent Components
-    subgraph "Agent (Target Network)"
-        AgentPoller[Polling Component]
-        TransportA[Blob Transport]
-        SocksHandler[SOCKS Handler]
-        CommandProcessor[Command Processor]
-    end
-    
-    %% Agent connections
-    RequestBlob -->|Poll| AgentPoller
-    AgentPoller -->|Process| TransportA
-    TransportA -->|Decode Packets| SocksHandler
-    SocksHandler -->|Process Commands| CommandProcessor
-    
-    %% Command Processing
-    subgraph "Command Processing"
-        Connect["CONNECT"]
-        Bind["TODO: BIND"]
-        UDP["UDP ASSOCIATE"]
-    end
-    
-    CommandProcessor -->|Route| Connect
-    CommandProcessor -->|Route| Bind
-    CommandProcessor -->|Route| UDP
-    
-    %% Target Connections
-    Connect -->|TCP Connection| TargetServer1[Target Server]
-    UDP -->|UDP Connection| TargetServer2[Target Server]
-    
-    %% Return path
-    TargetServer1 -->|Response Data| SocksHandler
-    TargetServer2 -->|UDP Data| SocksHandler
-    SocksHandler -->|Encode Response| TransportA
-    TransportA -->|Write| ResponseBlob
+flowchart LR
+    Client[SOCKS client] <--> Proxy[Proxy and UDP relay]
+    Proxy <--> Storage[Azure Blob / Queue / Table]
+    Storage <--> Agent[Agent]
+    Agent <--> Target[TCP / UDP destination or BIND peer]
 ```
 
-An example of a CONNECT operation is the following:
+The client offers authentication methods and the agent selects NoAuth or rejects
+the negotiation. Commands and responses travel through the shared tunnel. Each
+TCP direction advertises receive credit backed by reserved memory; the consumer
+returns credit after releasing bytes. Fair, bounded batches and independent
+control admission allow healthy streams and shutdown messages to progress.
 
-```mermaid
-sequenceDiagram
-    participant Client as Client Application
-    participant Proxy as Proxy Server
-    participant AzureStor as Azure Blob Storage
-    participant Agent as Agent
-    participant Target as Target Server
-    
-    Note over Client,Target: SOCKS5 Protocol Flow
-    
-    %% Proxy Server and Agent Initialization
-    Proxy->>AzureStor: Initialize connection
-    Agent->>AzureStor: Start polling for requests
-    
-    %% Client Connection and Authentication
-    Client->>Proxy: TCP Connection
-    Proxy->>Client: Auth methods (NoAuth supported)
-    Client->>Proxy: Select Auth method
-    
-    %% Command Processing
-    Client->>Proxy: CONNECT command + target address
-    Proxy->>AzureStor: Write CONNECT request packet to Request Blob
-    Agent->>AzureStor: Poll and retrieve CONNECT request
-    
-    %% Target Connection
-    Agent->>Target: Establish TCP connection
-    Target->>Agent: Connection established
-    Agent->>AzureStor: Write connection success to Response Blob
-    Proxy->>AzureStor: Poll and retrieve response
-    Proxy->>Client: CONNECT success response
-    
-    %% Data Transfer (Bidirectional)
-    Client->>Proxy: Send data
-    Proxy->>AzureStor: Write data packet to Request Blob
-    Agent->>AzureStor: Poll and retrieve data packet
-    Agent->>Target: Forward data
-    
-    Target->>Agent: Response data
-    Agent->>AzureStor: Write response data to Response Blob
-    Proxy->>AzureStor: Poll and retrieve response data
-    Proxy->>Client: Forward response data
-```
+Default limits per endpoint include a 512 KiB stream window, 64 MiB receive
+reservation budget, a separate 64 MiB outgoing payload budget, 128 streams,
+32 KiB DATA frames, 512 KiB encoded batches, 512 control slots and a five-second
+graceful drain. UDP adds bounded 256 KiB / 64-packet receive queues and 64 resolved
+destinations per association. These budgets do **not** cap whole-process memory.
+
+Configure limits using the environment variables in [flow control](docs/flow-control.md)
+and [UDP tunneling](docs/udp-tunnel.md). The [measured baseline](docs/performance.md)
+records concurrency, peak heap, latency, allocations, SDK requests and the rationale
+for these defaults. Storage latency and polling remain substantial even after
+removing Blob's shared read/write lock; no universal throughput guarantee is made.
+
+## Upgrade and validation
+
+Drain existing tunnels and deploy matching proxy and agent binaries together.
+The current wire protocol is **version 3**; unsupported and legacy versions are
+explicitly rejected during logical-stream setup. This is not a rolling mixed-version
+upgrade. For WASM, deploy and validate a compatible socket host v2 as well.
+The committed aznet revision is
+`v0.0.0-20261006132211-7abcd80a7a28`.
+
+[Release validation](docs/release-validation.md) records exact revisions and
+separates builds from runtime evidence: race tests, vet, native and WASM builds,
+Bun socket execution, isolated Linux topology, Azurite, and native live Azure
+Blob/Queue/Table tests. Production WASM-over-Azure, browser/WebSocket hosts,
+public BIND/NAT reachability and deployment-specific soak/performance remain
+rollout checks.
 
 ## Troubleshooting
 
-**Why does my agent immediately stop running ?**
+If an agent exits immediately, check its exit code and the proxy logs:
 
-There might be several reasons why your agent stops immediately after you run it. Check its exit code:
+| Exit code | Meaning |
+|---|---|
+| 0 | Normal completion |
+| 1 | Context canceled |
+| 2 | Missing connection string |
+| 3 | Connection-string parsing or connection setup failed |
+| 4 | Identity exchange failed |
 
-```sh
-# Bash
-echo $?
-```
+Check the selected service endpoint, Azure connectivity, credential validity and
+matching proxy/agent versions. For WASM, verify host version and callback/disposal
+semantics. For slow traffic, compare representative workloads with the recorded
+baseline before increasing windows; larger reservations increase memory.
 
-```cmd
-REM CMD
-echo %ERRORLEVEL%
-```
-
-```pwsh
-# PowerShell
-echo $LastExitCode
-```
-
-Each exit code describes why the agent stopped running:
-
-| Exit code | Reason                                      |
-| --------- | ------------------------------------------- |
-| 0         | No error                                    |
-| 1         | The context has been canceled               |
-| 2         | The connection string is missing            |
-| 3         | The connection string is invalid or expired |
-
-If you encounter issues:
-
-1. Check Azure credentials and permissions
-2. Verify connectivity to Azure Blob Storage
-3. Check for any firewall rules blocking outbound connections
-4. Ensure the agent is running and properly connected
-
-## TODO
-
-- BIND command (not implemented yet)
-- Improve proxy speed even more
+Project-owned agent diagnostics and proxy-side numeric error decoding remain a
+follow-up audit. The proxy-owned `ErrToString` map is retained; this release does
+not claim that the agent binary contains no explanatory strings.
 
 ## CHANGELOG
+
+**Unreleased stabilization:**
+
+- Reserved receive credit, bounded fair scheduling, and ordered half-close.
+- Native BIND and cloud-tunneled UDP with explicit overload limits.
+- Session authorization expiry display and bounded lifecycle cleanup.
+- Socket host v2 and actual Bun 1.4.2 WASM runtime validation.
+- Published aznet directional Blob I/O fix and measured performance baselines.
+- Coordinated wire-version-3 rollout required; see upgrade notes above.
 
 **ProxyBlob v2.2 - 03/08/2026:**
 

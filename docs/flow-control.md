@@ -214,12 +214,11 @@ cannot substitute for it.
 ## Rollout and validation scope
 
 Drain existing tunnels before deploying matching proxy/agent binaries. Mixed
-versions are rejected on logical-stream setup. The committed aznet pin remains
-unchanged: publishing and pinning the merged aznet integrity/buffering changes
-is separate dependency integration work. Native flow regressions and WASM builds
-do not establish production JS-host or live Azure behavior. UDP overload policy,
-JS buffer/callback cleanup, organization, and final release validation remain
-separate work.
+versions are rejected on logical-stream setup. The published aznet integration,
+UDP overload policy, JS host cleanup and measured performance work are now
+complete; see [release validation](release-validation.md) for exact revisions,
+actual native/Bun/Azure evidence and remaining deployment-specific checks.
+Compilation alone does not establish production JS-host or live Azure behavior.
 
 ### Explicit agent removal
 
