@@ -63,3 +63,7 @@ TCP senders pause when their reserved receive credit is exhausted. UDP queues in
 Configure the finite environment limits described in [flow control](flow-control.md) and [UDP tunneling](udp-tunnel.md). [Measured performance](performance.md) records concurrency, heap samples, latency and request counts. Keep those measurements separate from your own region, account and workload.
 
 Before deployment, use the [release validation and rollout checklist](release-validation.md). In particular, native Azure tests do not prove production WASM-host behavior, and BIND does not arrange inbound firewall/NAT reachability.
+
+## Logging
+
+The default `info` level shows normal operation without per-stream socket-closure messages. Use `./proxy -c config.json --log-level debug` to collect those diagnostics, or set `log_level` in the configuration. See [logging levels](logging.md) for precedence and severity.

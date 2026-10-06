@@ -138,7 +138,7 @@ listener stop demo
 exit
 ```
 
-`agent stop` stops local SOCKS service while retaining the tunnel; `agent rm` removes the selected agent and its tunnel. The selection should clear. `listener stop demo` stops acceptance and closes its remaining sessions. Inspect any cleanup failure instead of assuming pending traffic was delivered.
+`agent stop` stops local SOCKS service while retaining the tunnel; `agent rm` removes the selected agent and its tunnel. The selection should clear. `listener stop demo` stops acceptance and closes its remaining sessions. A successful stop prints **Listener stopped** at the default log level. Inspect any cleanup failure instead of assuming pending traffic was delivered.
 
 For the disposable local emulator:
 
