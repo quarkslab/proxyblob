@@ -21,6 +21,7 @@ type ListenerConfig struct {
 
 // Config holds multiple listener configurations.
 type Config struct {
+	LogLevel  string           `json:"log_level,omitempty"`
 	Listeners []ListenerConfig `json:"listeners"` // array of listener configurations
 }
 
@@ -63,6 +64,9 @@ func LoadConfig(configPath string) (*Config, error) {
 
 // Validate checks required config fields.
 func (c *Config) Validate() error {
+	if _, err := resolveLogLevel(c.LogLevel, ""); err != nil {
+		return err
+	}
 	if len(c.Listeners) == 0 {
 		return fmt.Errorf("at least one listener configuration is required")
 	}

@@ -17,6 +17,10 @@ var ErrToString = map[byte]string{
 
 	// Connection state errors
 	protocol.ErrConnectionClosed:   "connection closed",
+	protocol.ErrStreamNotConnected: "stream socket is no longer connected",
+	protocol.ErrStreamReset:        "stream reset by peer",
+	protocol.ErrStreamBrokenPipe:   "stream write failed: broken pipe",
+	protocol.ErrStreamCanceled:     "stream canceled",
 	protocol.ErrConnectionNotFound: "connection not found",
 	protocol.ErrConnectionExists:   "connection already exists",
 	protocol.ErrInvalidState:       "invalid connection state",
@@ -78,6 +82,10 @@ func protocolErrorReporter(logger zerolog.Logger) func(uuid.UUID, byte) {
 		if code == protocol.ErrNone {
 			return
 		}
-		logger.Warn().Uint8("code", code).Str("conn_id", id.String()).Msg(ErrorDescription(code))
+		event := logger.Warn()
+		if protocol.IsStreamClosure(code) {
+			event = logger.Debug()
+		}
+		event.Uint8("code", code).Str("conn_id", id.String()).Msg(ErrorDescription(code))
 	}
 }

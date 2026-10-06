@@ -103,9 +103,13 @@ func (c *ProtocolConn) Shutdown() {
 // Close implements net.Conn.Close.
 // Sends a CmdClose packet and then shuts down locally.
 func (c *ProtocolConn) Close() error {
+	return c.closeWithCode(ErrStreamCanceled)
+}
+
+func (c *ProtocolConn) closeWithCode(code byte) error {
 	c.closeOnce.Do(func() {
 		c.Shutdown()
-		c.handler.SendClose(c.id, ErrConnectionClosed)
+		c.handler.SendClose(c.id, code)
 	})
 	c.Shutdown()
 	return nil

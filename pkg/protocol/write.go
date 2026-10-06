@@ -415,7 +415,17 @@ func (h *BaseHandler) Drain(ctx context.Context) error {
 func Forward(a, b net.Conn) error {
 	results := make(chan error, 2)
 	var abort sync.Once
-	closeBoth := func() { abort.Do(func() { a.Close(); b.Close() }) }
+	closeBoth := func() {
+		abort.Do(func() {
+			for _, conn := range []net.Conn{a, b} {
+				if pc, ok := conn.(*ProtocolConn); ok {
+					pc.Shutdown()
+				} else {
+					conn.Close()
+				}
+			}
+		})
+	}
 	copyDirection := func(dst, src net.Conn) {
 		var err error
 		if pc, ok := dst.(*ProtocolConn); ok {
@@ -438,5 +448,15 @@ func Forward(a, b net.Conn) error {
 	go copyDirection(a, b)
 	go copyDirection(b, a)
 	err1, err2 := <-results, <-results
-	return errors.Join(err1, err2)
+	err := errors.Join(err1, err2)
+	if err != nil {
+		// Both copies have finished: a shutdown error must not mask a concurrent
+		// failure from the other direction in the peer's close diagnosis.
+		for _, conn := range []net.Conn{a, b} {
+			if pc, ok := conn.(*ProtocolConn); ok {
+				pc.closeWithCode(StreamErrorCode(err))
+			}
+		}
+	}
+	return err
 }
