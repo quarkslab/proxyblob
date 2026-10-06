@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"time"
 )
@@ -38,4 +39,11 @@ func (c *nativeUDPConn) SetReadDeadline(t time.Time) error {
 
 func (c *nativeUDPConn) Close() error {
 	return c.conn.Close()
+}
+
+func listenUDPContext(ctx context.Context) (UDPRelayConn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listenUDP()
 }

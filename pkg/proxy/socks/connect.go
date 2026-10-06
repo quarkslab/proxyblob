@@ -38,7 +38,9 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 	fmt.Printf("[CONNECT] %s\n", target)
 
 	// Establish TCP connection to target (uses Bun bridge on WASM, native net on other platforms)
-	targetConn, err := dialTCP(target)
+	setupCtx, cancelSetup := socketSetupContext(h.Ctx, conn.Closed)
+	targetConn, err := dialTCPContext(setupCtx, target)
+	cancelSetup()
 	if err != nil {
 		// Map network error to appropriate protocol error code
 		errCode = protocol.MapNetError(err)

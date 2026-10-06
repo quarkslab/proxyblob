@@ -3,10 +3,15 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"time"
 )
 
 func dialTCP(target string) (net.Conn, error) {
-	return net.DialTimeout("tcp", target, 10*time.Second)
+	return dialTCPContext(context.Background(), target)
+}
+
+func dialTCPContext(ctx context.Context, target string) (net.Conn, error) {
+	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", target)
 }

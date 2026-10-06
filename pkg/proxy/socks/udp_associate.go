@@ -14,7 +14,9 @@ import (
 // It creates a single UDP relay socket, tells the client which port to use,
 // then dispatches all relay logic to handleUDPPackets.
 func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection) byte {
-	udpConn, err := listenUDP()
+	setupCtx, cancelSetup := socketSetupContext(h.Ctx, conn.Closed)
+	udpConn, err := listenUDPContext(setupCtx)
+	cancelSetup()
 	if err != nil {
 		h.SendError(conn, protocol.ErrNetworkUnreachable)
 		return protocol.ErrNetworkUnreachable
