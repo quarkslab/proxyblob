@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 
@@ -57,21 +56,7 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 		return protocol.ErrConnectionClosed
 	}
 
-	// Send success response
-	// Use stack allocation for fixed-size response (10 bytes)
-	localAddr := targetConn.LocalAddr().(*net.TCPAddr)
-	var responseBuf [10]byte
-	responseBuf[0] = Version5
-	responseBuf[1] = Succeeded
-	responseBuf[2] = 0x00
-	responseBuf[3] = IPv4
-	copy(responseBuf[4:8], localAddr.IP.To4())
-	binary.BigEndian.PutUint16(responseBuf[8:], uint16(localAddr.Port))
-	response := responseBuf[:]
-
-	errCode = h.SendData(conn.ID, response)
-	if errCode != protocol.ErrNone {
-		targetConn.Close()
+	if h.sendTCPReply(conn, Succeeded, targetConn.LocalAddr().(*net.TCPAddr)) != protocol.ErrNone {
 		return protocol.ErrPacketSendFailed
 	}
 

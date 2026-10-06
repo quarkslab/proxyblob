@@ -1,15 +1,13 @@
 package proxy
 
 import (
+	"net"
 	"proxyblob/pkg/protocol"
 )
 
-// handleBind processes the SOCKS5 BIND command.
-// The BIND command is used to accept incoming TCP connections
-// on behalf of the client. This implementation returns
-// ErrUnsupportedCommand as BIND is not currently supported.
-//
-// The command format follows RFC 1928 Section 4.
-func (h *SocksHandler) handleBind(conn *protocol.Connection, data []byte) byte {
-	return protocol.ErrUnsupportedCommand
+// Both CONNECT and BIND replies describe the actual socket, not the request's
+// address family (a domain can resolve to either IPv4 or IPv6).
+func (h *SocksHandler) sendTCPReply(c *protocol.Connection, code byte, addr *net.TCPAddr) byte {
+	address := UDPAddress(&net.UDPAddr{IP: addr.IP, Port: addr.Port})
+	return h.SendData(c.ID, append([]byte{Version5, code, 0}, address...))
 }

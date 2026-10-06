@@ -173,6 +173,7 @@ func liveRun(role string) {
 				}
 			}
 		}()
+		bindPeerService()
 		echo("udp", "[::]:19001")
 		echo("udp6", "[::1]:19002")
 		var token []byte

@@ -125,8 +125,8 @@ These tests exercise actual TCP/UDP resources, **not WebSockets**. A production
 host using a WebSocket bridge must implement the same disposal barrier for its
 WebSocket, queued messages, and connection-attempt callbacks, and validate its
 own finite queues and backpressure before rollout. No WebSocket cleanup claim
-is made here. The UDP tunnel tests are described in [UDP tunneling](udp-tunnel.md); SOCKS BIND
-remains separate work.
+is made here. The UDP tunnel tests are described in [UDP tunneling](udp-tunnel.md); WASM BIND explicitly returns command-not-supported without host allocation
+(see [native BIND](socks-bind.md)).
 
 Bun API references: [TCP](https://bun.sh/docs/runtime/networking/tcp),
 [Node compatibility](https://bun.sh/docs/runtime/nodejs-compat), and the pinned

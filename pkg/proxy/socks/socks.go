@@ -1,13 +1,15 @@
 // Package proxy implements SOCKS5 proxy functionality.
 // It implements SOCKS5 negotiation and forwarding following RFC 1928, supporting
-// CONNECT and UDP ASSOCIATE (BIND not implemented) commands with NoAuth authentication.
+// CONNECT, native BIND and UDP ASSOCIATE commands with NoAuth authentication.
 package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"slices"
+	"time"
 
 	"proxyblob/pkg/protocol"
 
@@ -20,30 +22,52 @@ import (
 type SocksHandler struct {
 	*protocol.BaseHandler
 	udpDestinations int
+	bindTimeout     time.Duration
+}
+
+// Option configures agent-side SOCKS setup limits.
+type Option func(*SocksHandler) error
+
+// WithBindTimeout bounds native BIND resolution, listener setup and peer wait.
+// The default is two minutes; it does not limit the accepted TCP conversation.
+func WithBindTimeout(d time.Duration) Option {
+	return func(h *SocksHandler) error {
+		if d <= 0 {
+			return fmt.Errorf("BIND timeout must be positive")
+		}
+		h.bindTimeout = d
+		return nil
+	}
 }
 
 // NewSocksHandler creates a SOCKS5 handler with the given connection.
 // The connection is used for sending and receiving protocol messages.
-func NewSocksHandler(ctx context.Context, conn net.Conn) *SocksHandler {
-	handler, err := NewSocksHandlerWithConfig(ctx, conn, protocol.DefaultFlowConfig())
+func NewSocksHandler(ctx context.Context, conn net.Conn, options ...Option) *SocksHandler {
+	handler, err := NewSocksHandlerWithConfig(ctx, conn, protocol.DefaultFlowConfig(), options...)
 	if err != nil {
 		panic(err)
 	}
 	return handler
 }
 
-func NewSocksHandlerWithConfig(ctx context.Context, conn net.Conn, cfg protocol.FlowConfig) (*SocksHandler, error) {
+func NewSocksHandlerWithConfig(ctx context.Context, conn net.Conn, cfg protocol.FlowConfig, options ...Option) (*SocksHandler, error) {
 	base, err := protocol.NewBaseHandlerWithConfig(ctx, conn, cfg)
 	if err != nil {
 		return nil, err
 	}
-	handler := &SocksHandler{BaseHandler: base, udpDestinations: cfg.UDPDestinations}
+	handler := &SocksHandler{BaseHandler: base, udpDestinations: cfg.UDPDestinations, bindTimeout: 2 * time.Minute}
+	for _, option := range options {
+		if err := option(handler); err != nil {
+			base.Abort()
+			return nil, err
+		}
+	}
 	handler.PacketHandler = handler
 	return handler, nil
 }
 
 // Start begins processing SOCKS5 requests. The address parameter is ignored
-// as there are no listeners on the agent side.
+// because BIND creates its listener per request.
 func (h *SocksHandler) Start(address string) {
 	go h.ReceiveLoop()
 }
@@ -130,19 +154,19 @@ func (h *SocksHandler) OnClose(connectionID uuid.UUID, errorCode byte) byte {
 // The flow consists of three phases:
 //
 //  1. Authentication method negotiation
-//  2. Command processing (CONNECT, UDP ASSOCIATE)
+//  2. Command processing (CONNECT, BIND, UDP ASSOCIATE)
 //  3. Data transfer between client and target
 func (h *SocksHandler) processConnection(conn *protocol.Connection) {
 	// SOCKS protocol has 3 sequential phases
 	errCode := h.handleAuthNegotiation(conn)
 	if errCode != protocol.ErrNone {
-		h.SendClose(conn.ID, errCode)
+		h.SendClose(conn.ID, protocol.ErrNone)
 		return
 	}
 
 	errCode = h.handleCommand(conn)
 	if errCode != protocol.ErrNone {
-		h.SendClose(conn.ID, errCode)
+		h.SendClose(conn.ID, protocol.ErrNone)
 		return
 	}
 
@@ -175,8 +199,6 @@ func (h *SocksHandler) SendError(conn *protocol.Connection, errCode byte) {
 		socksReplyCode = CommandNotSupported
 	case protocol.ErrAddressNotSupported:
 		socksReplyCode = AddressTypeNotSupported
-	case protocol.ErrAuthFailed:
-		socksReplyCode = NoAcceptableMethods
 	}
 
 	// Build and send error response
@@ -221,7 +243,7 @@ func (h *SocksHandler) handleAuthNegotiation(conn *protocol.Connection) byte {
 
 	// Currently we only support NoAuth (0x00)
 	if !slices.Contains(methods, NoAuth) {
-		h.SendError(conn, protocol.ErrAuthFailed)
+		h.SendData(conn.ID, []byte{Version5, NoAcceptableMethods})
 		return protocol.ErrAuthFailed
 	}
 
@@ -239,11 +261,10 @@ func (h *SocksHandler) handleAuthNegotiation(conn *protocol.Connection) byte {
 // Supported commands are:
 //
 //   - CONNECT (0x01): Establish TCP/IP stream connection
+//
 //   - UDP ASSOCIATE (0x03): UDP relay
 //
-// Unsupported commands are:
-//
-//   - BIND (0x02): TCP/IP port binding
+//   - BIND (0x02): agent-side TCP listener (native only)
 func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 	// Read SOCKS5 command header: [version(1)][cmd(1)][rsv(1)][atyp(1)]
 	// Use stack allocation for fixed-size header
@@ -257,6 +278,11 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 	if header[0] != Version5 {
 		h.SendError(conn, protocol.ErrInvalidSocksVersion)
 		return protocol.ErrInvalidSocksVersion
+	}
+
+	if header[2] != 0 {
+		h.SendError(conn, protocol.ErrInvalidPacket)
+		return protocol.ErrInvalidPacket
 	}
 
 	cmd := header[1]

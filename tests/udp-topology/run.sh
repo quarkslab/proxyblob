@@ -21,8 +21,8 @@ docker network connect --alias proxy-back "$prefix-back" "$prefix-proxy"
 docker run -d --name "$prefix-agent" --network "$prefix-back" \
   --mount "type=bind,src=$output/harness,dst=/harness,readonly" "$image" /harness agent >/dev/null
 agent_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$prefix-agent")
-docker run --name "$prefix-client" --network "$prefix-front" -e "AGENT_IP=$agent_ip" \
+docker run --name "$prefix-client" --network "$prefix-front" -e "AGENT_IP=$agent_ip" -e LIVE_BIND=1 \
   --mount "type=bind,src=$output/harness,dst=/harness,readonly" "$image" /harness client
 
 GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go test -mod=readonly -c -o "$output/server.test" ./pkg/proxy/server
-docker run --rm --network none --mount "type=bind,src=$output/server.test,dst=/server.test,readonly" "$image" /server.test -test.run TestUDP -test.v -test.timeout=30s
+docker run --rm --network none --mount "type=bind,src=$output/server.test,dst=/server.test,readonly" "$image" /server.test -test.run "TestUDP|TestBind|TestRejectedAuth|TestConnectReply|TestMalformedSOCKS" -test.v -test.timeout=30s

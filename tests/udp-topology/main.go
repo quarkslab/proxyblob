@@ -43,6 +43,7 @@ func main() {
 			conn.Close()
 		}
 	case "agent":
+		bindPeerService()
 		echo("udp", "[::]:19001")
 		echo("udp6", "[::1]:19002")
 		var conn net.Conn
@@ -137,6 +138,9 @@ func client() {
 	}
 
 	fmt.Println("PASS direct client-to-agent UDP is blocked across isolated networks")
+	if os.Getenv("LIVE_BIND") == "1" {
+		bindClient()
+	}
 	if os.Getenv("LIVE_DNS") == "1" {
 		dnsClient()
 	}

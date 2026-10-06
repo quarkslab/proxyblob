@@ -43,7 +43,7 @@ docker run -d --name "$prefix-agent" --network "$prefix-back" \
   --mount "type=bind,src=$output/harness,dst=/harness,readonly" "$image" /harness live agent >/dev/null
 agent_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$prefix-agent")
 set +e
-docker run --name "$prefix-client" --network "$prefix-front" -e "AGENT_IP=$agent_ip" -e LIVE_TEST=1 -e "LIVE_DNS=${LIVE_DNS:-0}" \
+docker run --name "$prefix-client" --network "$prefix-front" -e "AGENT_IP=$agent_ip" -e LIVE_TEST=1 -e "LIVE_DNS=${LIVE_DNS:-0}" -e "LIVE_BIND=${LIVE_BIND:-0}" \
   --mount "type=bind,src=$output/signals,dst=/signals" \
   --mount "type=bind,src=$output/harness,dst=/harness,readonly" "$image" /harness client
 status=$?
