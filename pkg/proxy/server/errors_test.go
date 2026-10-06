@@ -99,9 +99,9 @@ func TestStreamDiagnosticSeverity(t *testing.T) {
 		{protocol.ErrConnectionClosed, "warn"},
 		{protocol.ErrTransportError, "warn"},
 		{protocol.ErrTransportTimeout, "warn"},
-		{protocol.ErrStreamReset, "warn"},
-		{protocol.ErrStreamNotConnected, "warn"},
-		{protocol.ErrStreamBrokenPipe, "warn"},
+		{protocol.ErrStreamReset, "debug"},
+		{protocol.ErrStreamNotConnected, "debug"},
+		{protocol.ErrStreamBrokenPipe, "debug"},
 	} {
 		var output bytes.Buffer
 		protocolErrorReporter(zerolog.New(&output))(uuid.New(), tc.code)
@@ -115,5 +115,20 @@ func TestStreamDiagnosticSeverity(t *testing.T) {
 		if record.Level != tc.level || record.Code != tc.code {
 			t.Fatalf("unexpected diagnostic: %+v", record)
 		}
+	}
+}
+
+func TestInfoLevelFiltersSocketClosuresButKeepsFailures(t *testing.T) {
+	var output bytes.Buffer
+	report := protocolErrorReporter(zerolog.New(&output).Level(zerolog.InfoLevel))
+	for _, code := range []byte{protocol.ErrStreamCanceled, protocol.ErrStreamReset, protocol.ErrStreamBrokenPipe, protocol.ErrStreamNotConnected} {
+		report(uuid.New(), code)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("common socket closures leaked at info: %s", &output)
+	}
+	report(uuid.New(), protocol.ErrTransportError)
+	if !bytes.Contains(output.Bytes(), []byte(`"code":22`)) {
+		t.Fatal("transport warning suppressed")
 	}
 }

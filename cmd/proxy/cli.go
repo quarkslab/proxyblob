@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/desertbit/grumble"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"net"
 	"os"
@@ -453,6 +454,7 @@ func setupCLI() *grumble.App {
 		HistoryFile: histFile,
 		Flags: func(f *grumble.Flags) {
 			f.String("c", "config", "config.json", "path to configuration file")
+			f.String("", "log-level", "", "minimum log level: trace, debug, info, warn, error (overrides config)")
 		},
 	})
 
@@ -472,6 +474,12 @@ func setupCLI() *grumble.App {
 
 		// Note: Listeners are not auto-started. User must start them explicitly.
 		// When a listener is started, it automatically becomes the default.
+		level, err := resolveLogLevel(config.LogLevel, flags.String("log-level"))
+		if err != nil {
+			return err
+		}
+		zerolog.SetGlobalLevel(level)
+
 		log.Info().Int("listener_count", len(config.Listeners)).Msg("Configuration loaded. Use 'listener start <id>' to start a listener (it will become the default).")
 
 		return nil
