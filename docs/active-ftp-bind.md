@@ -62,3 +62,29 @@ separate protocol regressions documented in [native BIND](socks-bind.md).
 References: [Dante socksify](https://www.inet.no/dante/doc/latest/socksify.1.html),
 [tnftp active mode](https://manpages.debian.org/bookworm/tnftp/ftp.1.en.html),
 [vsftpd configuration](https://manpages.debian.org/bookworm/vsftpd/vsftpd.conf.5.en.html).
+
+## Recorded result — 2026-10-06
+
+All four modes passed: isolated TCP tunnel, real Azure Blob, real Azure Queue,
+and real Azure Table. Runtime source was ProxyBlob
+`048789407e8cb19f181b82b8bf656187a841f785`; the retained fixture is commit
+`10dd01b605a440300c298f0df52cbba234da76ec`. The published aznet dependency was
+`v0.0.0-20261006132211-7abcd80a7a28`. Go 1.26.4 built the Linux/arm64 harness.
+Tools were Dante client `1.4.2+dfsg-7`, tnftp `20210827-4+b1` and vsftpd `3.0.5-0.2`.
+
+Per mode: two FTP control sessions, six successful BIND conversations, four
+byte-identical 2 MiB file transfers and two directory listings. The active data
+connections reached the advertised agent address from the FTP server's port 20.
+All three Azure runs independently reported zero residual resources before and
+after the cleanup check. Test containers and networks were removed.
+
+The two fixture hashes were:
+
+```text
+upload:   1e075c8d478ad21844e33e830a695ef03a4d2488b69ee275bd8947618bb1be1e
+download: 12d23d71c5fe90e2fb248621126e104c9eed8b8796156a3043453e692db36ad5
+```
+
+No production fix was required. The earlier single-session harness evidence is
+now supplemented by an independent FTP client/library/server interoperability
+case; it still does not establish public inbound reachability for a deployment.
