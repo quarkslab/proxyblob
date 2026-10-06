@@ -14,22 +14,21 @@ import (
 // The proxy owns the client endpoint. The agent only owns target-facing UDP.
 func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []byte) byte {
 	if target, code := ParseAddress(request); code != protocol.ErrNone {
-		h.SendError(conn, code)
-		return code
+		return h.failUDPAssociate(conn, code)
 	} else if _, _, err := net.SplitHostPort(target); err != nil {
-		h.SendError(conn, protocol.ErrAddressNotSupported)
-		return protocol.ErrAddressNotSupported
+		return h.failUDPAssociate(conn, protocol.ErrAddressNotSupported)
 	}
 	d := conn.EnableDatagrams()
 	if d == nil {
 		return protocol.ErrInvalidState
 	}
+	// A control FIN ends this association, including while setup is in flight.
+	go func() { io.Copy(io.Discard, conn.ProtocolConn()); h.SendClose(conn.ID, protocol.ErrNone) }()
 	setupCtx, cancel := socketSetupContext(h.Ctx, conn.Closed)
 	socket, err := listenUDPContext(setupCtx)
 	cancel()
 	if err != nil {
-		h.SendError(conn, protocol.ErrNetworkUnreachable)
-		return protocol.ErrNetworkUnreachable
+		return h.failUDPAssociate(conn, protocol.ErrNetworkUnreachable)
 	}
 	defer socket.Close()
 	done := make(chan struct{})
@@ -42,8 +41,7 @@ func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []b
 		}
 		socket.Close()
 	}()
-	// A control FIN ends this association, including while setup is in flight.
-	go func() { io.Copy(io.Discard, conn.ProtocolConn()); h.SendClose(conn.ID, protocol.ErrNone) }()
+
 	address, err := d.Request(request)
 	if err != nil {
 		return protocol.ErrConnectionClosed
@@ -52,7 +50,8 @@ func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []b
 		return protocol.ErrPacketSendFailed
 	}
 	if address[0] != Succeeded {
-		return protocol.ErrNetworkUnreachable
+		h.SendClose(conn.ID, protocol.ErrNone)
+		return protocol.ErrNone
 	}
 	err = h.relayAgentUDP(conn, d, socket)
 	if err != nil && !errors.Is(err, net.ErrClosed) {
@@ -143,4 +142,12 @@ func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagra
 			return err
 		}
 	}
+}
+
+// A failure reply is application data: close gracefully so the proxy drains it
+// before closing TCP. A nonzero tunnel CLOSE would discard that accepted reply.
+func (h *SocksHandler) failUDPAssociate(c *protocol.Connection, code byte) byte {
+	h.SendError(c, code)
+	h.SendClose(c.ID, protocol.ErrNone)
+	return protocol.ErrNone
 }

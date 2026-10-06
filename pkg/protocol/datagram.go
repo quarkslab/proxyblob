@@ -123,7 +123,7 @@ func (h *BaseHandler) receiveDatagram(cmd byte, id uuid.UUID, b []byte) byte {
 	}
 	c := v.(*Connection)
 	if cmd == CmdUDPAssociate {
-		if len(b) > 259 || len(b) < 7 {
+		if len(b) > 259 || len(b) < 5 {
 			return ErrInvalidPacket
 		}
 		receiver, ok := h.PacketHandler.(interface {
@@ -149,7 +149,7 @@ func (h *BaseHandler) receiveDatagram(cmd byte, id uuid.UUID, b []byte) byte {
 			return ErrInvalidState
 		}
 	}
-	if len(b) > MaxDatagramSize || len(b) < 10 {
+	if len(b) > MaxDatagramSize || len(b) < 8 {
 		return ErrInvalidPacket
 	}
 	d.deliver(b)

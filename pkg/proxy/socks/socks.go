@@ -309,8 +309,7 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 		errCode = h.handleBind(conn, cmdData)
 	case UDPAssociate:
 		if header[2] != 0 {
-			h.SendError(conn, protocol.ErrInvalidPacket)
-			return protocol.ErrInvalidPacket
+			return h.failUDPAssociate(conn, protocol.ErrInvalidPacket)
 		}
 		errCode = h.handleUDPAssociate(conn, cmdData[3:])
 	default:

@@ -400,3 +400,13 @@ func TestUDPRejectsWrongSourceIP(t *testing.T) {
 		t.Fatal("wrong source IP received a reply")
 	}
 }
+
+func TestUDPShortDomainSourceHints(t *testing.T) {
+	proxy, _ := udpTunnel(t, "127.0.0.1:0")
+	for _, domain := range []string{"a", "ab"} {
+		address := append([]byte{3, byte(len(domain))}, []byte(domain)...)
+		address = append(address, 0, 0)
+		_, relay := udpAssociate(t, proxy, address)
+		udpExchange(t, udpSocket(t, "127.0.0.1:0"), relay, udpEcho(t, "127.0.0.1:0").LocalAddr().(*net.UDPAddr), false, []byte("short source hint"))
+	}
+}

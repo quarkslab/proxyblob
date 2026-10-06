@@ -109,3 +109,22 @@ func TestDatagramOutboundLimitIncludesInflightAndRejectsWholePackets(t *testing.
 		}
 	})
 }
+
+func TestDatagramShortDomainWithEmptyPayload(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, b := flowPair(t, DefaultFlowConfig())
+		x, y := openFlow(t, a, b)
+		send, receive := x.owner.EnableDatagrams(), y.owner.EnableDatagrams()
+		for _, domain := range []string{"a", "ab"} {
+			packet := append([]byte{0, 0, 0, 3, byte(len(domain))}, []byte(domain)...)
+			packet = append(packet, 0, 53)
+			if err := send.Send(packet); err != nil {
+				t.Fatal(err)
+			}
+			got, err := receive.Receive()
+			if err != nil || !bytes.Equal(packet, got) {
+				t.Fatalf("short domain: %v %v", got, err)
+			}
+		}
+	})
+}
