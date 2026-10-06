@@ -1,7 +1,7 @@
 # Multiplexed stream flow control
 
-Proxy and agent must be upgraded together. Version 2 changes NEW and ACK to
-carry a 4-byte big-endian version (`2`) and an 8-byte big-endian receive-window
+Proxy and agent must be upgraded together. Version 3 retains NEW and ACK framing introduced in version 2:
+a 4-byte big-endian version (`3`) and an 8-byte big-endian receive-window
 size. Empty legacy handshakes and unsupported versions terminate the tunnel
 with an explicit negotiation error in the log. Identity framing is unchanged.
 No backward identity sniffing or aznet Driver/Transport change is involved.
@@ -72,7 +72,9 @@ the writer owns one encoded batch. Thus the defaults allow 64 MiB of receive
 rings and a separate 64 MiB of outstanding outgoing payload per endpoint, plus
 at most 4 MiB of producer scratch, one 512-KiB batch and bounded record/header
 metadata. Allocator rounding and unreclaimed garbage add heap overhead. Control
-payloads are at most 12 bytes each. Framing retains at most one incomplete
+payloads are at most 259 bytes each with UDP setup records.
+See [UDP tunneling](udp-tunnel.md) for its separate drop policy and additional
+finite receive queues. Framing retains at most one incomplete
 1-MiB record plus a 64-KiB read chunk and the current decoded record. Socket,
 application, aznet, allocator and GC overhead are outside the ring budget.
 A control flood that exhausts reserved control capacity aborts the tunnel;

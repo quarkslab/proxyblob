@@ -125,8 +125,24 @@ These tests exercise actual TCP/UDP resources, **not WebSockets**. A production
 host using a WebSocket bridge must implement the same disposal barrier for its
 WebSocket, queued messages, and connection-attempt callbacks, and validate its
 own finite queues and backpressure before rollout. No WebSocket cleanup claim
-is made here. UDP tunneling and SOCKS BIND changes are outside this work.
+is made here. The UDP tunnel tests are described in [UDP tunneling](udp-tunnel.md); SOCKS BIND
+remains separate work.
 
 Bun API references: [TCP](https://bun.sh/docs/runtime/networking/tcp),
 [Node compatibility](https://bun.sh/docs/runtime/nodejs-compat), and the pinned
 [Bun socket implementation](https://github.com/oven-sh/bun/blob/bun-v1.4.2/src/js/node/net.ts).
+
+
+## UDP resolution extension
+
+Domain UDP destinations use optional
+`UDPResolve(host, onIP, onError): Handle`. `onIP` receives one resolved numeric
+IPv4 or IPv6 string. It shares the v2 rules: immediate handle, asynchronous
+callbacks, no throws, idempotent synchronous callback detachment on disposal,
+and late-completion suppression. The Go adapter cancels on association/handler
+closure and limits a lookup to ten seconds. Literal IPs need no resolver.
+A host missing this extension reports unsupported resolution for domain packets.
+The reference Bun host uses `node:dns.lookup`; an OS lookup already started may
+finish after cancellation, but no released Go callback is retained or invoked.
+Its UDP socket is dual-stack and maps IPv4 sends to IPv4-mapped IPv6 addresses.
+Run the production host's own IPv4/IPv6/domain tests before rollout.

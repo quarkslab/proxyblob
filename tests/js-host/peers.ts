@@ -53,9 +53,9 @@ export async function startPeers() {
     socket.on("drain", pump);
     pump();
   });
-  const udp = createSocket("udp4");
+  const udp = createSocket({ type: "udp6", ipv6Only: false });
   udp.on("message", (bytes, peer) => udp.send(bytes, peer.port, peer.address));
-  await new Promise<void>((resolve) => udp.bind(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => udp.bind(0, "::", resolve));
   return {
     ports: { response, peerFIN, bulk, slowSink, udp: udp.address().port },
     async close() {

@@ -1,3 +1,5 @@
+import { lookup } from "node:dns";
+import { isIP } from "node:net";
 import { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { createSocket, type Socket as DatagramSocket } from "node:dgram";
@@ -285,7 +287,7 @@ export function UDPListen(
       inFlight++;
       stats.maxUDPInFlight = Math.max(stats.maxUDPInFlight, inFlight);
       try {
-        socket.send(bytes, port, address, (err) => {
+        socket.send(bytes, port, isIP(address) === 4 ? `::ffff:${address}` : address, (err) => {
           inFlight--;
           if (err) callbacks?.error(err.message);
         });
@@ -312,7 +314,7 @@ export function UDPListen(
   queueMicrotask(() => {
     if (!callbacks) return;
     try {
-      socket = createSocket("udp4");
+      socket = createSocket({ type: "udp6", ipv6Only: false });
       stats.sockets++;
       counted = true;
       socket.on("close", socketClosed);
@@ -328,7 +330,7 @@ export function UDPListen(
         }
         callbacks.bind(facade, socket!.address().port);
       });
-      socket.bind(0, "127.0.0.1");
+      socket.bind(0, "::");
     } catch (err) {
       callbacks?.error(String(err));
     }
@@ -341,5 +343,22 @@ export function installHost() {
     ProxyBlobSocketHostVersion: 2,
     TCPDial,
     UDPListen,
+    UDPResolve,
   });
+}
+
+// Pending DNS cannot be canceled by node:dns, but disposal detaches callbacks
+// synchronously; late completion retains no Go callback or socket resource.
+export function UDPResolve(host: string, result: (ip: string) => void, error: (message: string) => void): Handle {
+  let callbacks: { result: typeof result; error: typeof error } | undefined = { result, error };
+  stats.active++; stats.callbacks += 2;
+  queueMicrotask(() => {
+    if (!callbacks) return;
+    try {
+      lookup(host, { family: 0 }, (err, address) => {
+        if (err) callbacks?.error(err.message); else callbacks?.result(address);
+      });
+    } catch (err) { callbacks?.error(String(err)); }
+  });
+  return { dispose() { if (!callbacks) return; callbacks = undefined; stats.active--; stats.callbacks -= 2; stats.disposed++; } };
 }

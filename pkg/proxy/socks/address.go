@@ -13,6 +13,9 @@ import (
 // It returns the address in host:port format and any error encountered.
 // The address format follows RFC 1928 Section 4.
 func ParseAddress(data []byte) (string, byte) {
+	if len(data) == 0 {
+		return "", protocol.ErrAddressNotSupported
+	}
 	addr, _, err := ParseNetworkAddress(data[0], data[1:])
 	if err != protocol.ErrNone {
 		return "", err
@@ -56,7 +59,7 @@ func ParseNetworkAddress(addrType byte, data []byte) (string, int, byte) {
 		}
 		domainLen := int(data[cursor])
 		cursor++
-		if len(data) < cursor+domainLen+2 { // +2 for port
+		if domainLen == 0 || len(data) < cursor+domainLen+2 { // +2 for port
 			return "", 0, protocol.ErrAddressNotSupported
 		}
 		addr = string(data[cursor : cursor+domainLen])
@@ -86,6 +89,9 @@ func ParseNetworkAddress(addrType byte, data []byte) (string, int, byte) {
 //
 // Returns the target address, header length, and any error encountered.
 func ExtractUDPHeader(data []byte) (string, int, byte) {
+	if len(data) < 4 || data[0] != 0 || data[1] != 0 || data[2] != 0 {
+		return "", 0, protocol.ErrInvalidPacket
+	}
 	headerLen := 4 // RSV(2) + FRAG(1) + ATYP(1)
 
 	// Parse the address part of the header
@@ -94,4 +100,15 @@ func ExtractUDPHeader(data []byte) (string, int, byte) {
 		return "", 0, err
 	}
 	return addr, headerLen + addrLen, protocol.ErrNone
+}
+
+// UDPAddress encodes an actual socket address without losing its address family.
+func UDPAddress(addr *net.UDPAddr) []byte {
+	var b []byte
+	if ip := addr.IP.To4(); ip != nil {
+		b = append([]byte{IPv4}, ip...)
+	} else {
+		b = append([]byte{IPv6}, addr.IP.To16()...)
+	}
+	return binary.BigEndian.AppendUint16(b, uint16(addr.Port))
 }

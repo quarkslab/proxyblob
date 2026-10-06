@@ -17,18 +17,22 @@ import (
 // transport and application/socket buffers. Each admitted stream reserves its
 // whole receive window, including grants that have not arrived yet.
 type FlowConfig struct {
-	StreamWindow int
-	TunnelWindow int
-	MaxStreams   int
-	DataFrame    int
-	BatchBytes   int
-	ControlSlots int
-	DrainTimeout time.Duration
+	StreamWindow    int
+	TunnelWindow    int
+	MaxStreams      int
+	DataFrame       int
+	BatchBytes      int
+	ControlSlots    int
+	DrainTimeout    time.Duration
+	UDPQueueBytes   int
+	UDPQueuePackets int
+	UDPDestinations int
 }
 
 func DefaultFlowConfig() FlowConfig {
 	return FlowConfig{
 		StreamWindow: 512 << 10, TunnelWindow: 64 << 20, MaxStreams: 128,
+		UDPQueueBytes: DatagramQueueBytes, UDPQueuePackets: DatagramQueuePackets, UDPDestinations: 64,
 		DataFrame: 32 << 10, BatchBytes: 512 << 10, ControlSlots: 512, DrainTimeout: DrainTimeout,
 	}
 }
@@ -40,15 +44,15 @@ func (c FlowConfig) validate() error {
 		c.DataFrame < 1 || c.DataFrame > MaxPacketDataSize ||
 		c.BatchBytes < max(c.DataFrame, 12)+HeaderSize || c.BatchBytes > 16<<20 ||
 		c.ControlSlots < 4*c.MaxStreams || c.ControlSlots > 1<<20 ||
-		c.DrainTimeout <= 0 {
+		c.DrainTimeout <= 0 || c.UDPQueueBytes < 1 || c.UDPQueueBytes > 16<<20 || c.UDPQueuePackets < 1 || c.UDPQueuePackets > 4096 || c.UDPDestinations < 1 || c.UDPDestinations > 4096 {
 		return errors.New("protocol: invalid finite flow limits")
 	}
 	return nil
 }
 
-// Version 2 requires receive-window negotiation and cumulative consumption.
+// Version 3 adds proxy-owned UDP associations and datagram records.
 // Empty (legacy) NEW/ACK payloads are explicitly unsupported, never sniffed.
-const ProtocolVersion uint32 = 2
+const ProtocolVersion uint32 = 3
 
 var ErrUnsupportedVersion = errors.New("protocol: unsupported version")
 var ErrFlowControl = errors.New("protocol: invalid receive credit")
@@ -190,12 +194,15 @@ func (h *BaseHandler) receiveCredit(id uuid.UUID, data []byte) byte {
 func FlowConfigFromEnv() (FlowConfig, error) {
 	c := DefaultFlowConfig()
 	for name, target := range map[string]*int{
-		"PROXYBLOB_STREAM_WINDOW": &c.StreamWindow,
-		"PROXYBLOB_TUNNEL_WINDOW": &c.TunnelWindow,
-		"PROXYBLOB_MAX_STREAMS":   &c.MaxStreams,
-		"PROXYBLOB_DATA_FRAME":    &c.DataFrame,
-		"PROXYBLOB_BATCH_BYTES":   &c.BatchBytes,
-		"PROXYBLOB_CONTROL_SLOTS": &c.ControlSlots,
+		"PROXYBLOB_STREAM_WINDOW":     &c.StreamWindow,
+		"PROXYBLOB_TUNNEL_WINDOW":     &c.TunnelWindow,
+		"PROXYBLOB_MAX_STREAMS":       &c.MaxStreams,
+		"PROXYBLOB_DATA_FRAME":        &c.DataFrame,
+		"PROXYBLOB_BATCH_BYTES":       &c.BatchBytes,
+		"PROXYBLOB_CONTROL_SLOTS":     &c.ControlSlots,
+		"PROXYBLOB_UDP_QUEUE_BYTES":   &c.UDPQueueBytes,
+		"PROXYBLOB_UDP_QUEUE_PACKETS": &c.UDPQueuePackets,
+		"PROXYBLOB_UDP_DESTINATIONS":  &c.UDPDestinations,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			n, err := strconv.Atoi(value)

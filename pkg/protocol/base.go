@@ -288,6 +288,8 @@ func (h *BaseHandler) ReceiveLoop() {
 // Returns error code indicating success or specific failure.
 func (h *BaseHandler) handlePacket(packet *Packet) byte {
 	switch packet.Command {
+	case CmdUDPAssociate, CmdUDPReady, CmdDatagram:
+		return h.receiveDatagram(packet.Command, packet.ConnectionID, packet.Data)
 	case CmdNew:
 		if _, err := peerWindow(packet.Data); err != nil {
 			return h.badHandshake(err)

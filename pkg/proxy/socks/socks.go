@@ -1,5 +1,5 @@
 // Package proxy implements SOCKS5 proxy functionality.
-// It provides a complete SOCKS5 implementation following RFC 1928, supporting
+// It implements SOCKS5 negotiation and forwarding following RFC 1928, supporting
 // CONNECT and UDP ASSOCIATE (BIND not implemented) commands with NoAuth authentication.
 package proxy
 
@@ -19,6 +19,7 @@ import (
 // and remote targets. The handler is safe for concurrent use.
 type SocksHandler struct {
 	*protocol.BaseHandler
+	udpDestinations int
 }
 
 // NewSocksHandler creates a SOCKS5 handler with the given connection.
@@ -36,7 +37,7 @@ func NewSocksHandlerWithConfig(ctx context.Context, conn net.Conn, cfg protocol.
 	if err != nil {
 		return nil, err
 	}
-	handler := &SocksHandler{BaseHandler: base}
+	handler := &SocksHandler{BaseHandler: base, udpDestinations: cfg.UDPDestinations}
 	handler.PacketHandler = handler
 	return handler, nil
 }
@@ -307,7 +308,11 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 	case Bind:
 		errCode = h.handleBind(conn, cmdData)
 	case UDPAssociate:
-		errCode = h.handleUDPAssociate(conn)
+		if header[2] != 0 {
+			h.SendError(conn, protocol.ErrInvalidPacket)
+			return protocol.ErrInvalidPacket
+		}
+		errCode = h.handleUDPAssociate(conn, cmdData[3:])
 	default:
 		h.SendError(conn, protocol.ErrUnsupportedCommand)
 		return protocol.ErrUnsupportedCommand

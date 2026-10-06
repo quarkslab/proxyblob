@@ -482,3 +482,23 @@ func TestJSLoopbackSlowWriterByteIdentity(t *testing.T) {
 		t.Fatal("host write queue exceeded byte bound")
 	}
 }
+
+func TestJSUDPReportsTruncationAndWriteRefusal(t *testing.T) {
+	state := testJSHost(t, "connect")
+	socket, err := listenUDP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	state.Call("emit", 1, state.Get("socket"), js.Global().Get("Uint8Array").New(16), 9, "127.0.0.1")
+	flushJSHost(state)
+	n, _, err := socket.ReadFrom(make([]byte, 1))
+	if n != 1 || !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("silent truncation: %d %v", n, err)
+	}
+	refuse := js.Global().Get("Function").New("return false")
+	state.Get("socket").Set("send", refuse)
+	if err = socket.WriteTo([]byte("drop"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9}); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("write refusal lost: %v", err)
+	}
+}

@@ -98,8 +98,8 @@ func TestParseNext(t *testing.T) {
 			wantTrailing: HeaderSize,
 		},
 		{
-			name:         "invalid command seven",
-			buf:          encodeHeader(CmdCredit+1, id, 0),
+			name:         "invalid command ten",
+			buf:          encodeHeader(CmdDatagram+1, id, 0),
 			wantErr:      ErrMalformedPacket,
 			wantTrailing: HeaderSize,
 		},
