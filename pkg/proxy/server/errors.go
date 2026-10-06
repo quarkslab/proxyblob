@@ -2,6 +2,8 @@
 package proxy
 
 import (
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"proxyblob/pkg/protocol"
 )
 
@@ -38,6 +40,40 @@ var ErrToString = map[byte]string{
 	protocol.ErrGeneralSocksFailure: "general SOCKS server failure",
 	protocol.ErrAuthFailed:          "authentication failed",
 
+	protocol.ErrBufferFull:               "receive buffer full",
+	byte(protocol.ErrShortPacket):        "incomplete protocol packet",
+	byte(protocol.ErrMalformedPacket):    "malformed protocol framing",
+	byte(protocol.ErrUnsupportedVersion): "unsupported tunnel protocol version",
+	byte(protocol.ErrFlowControl):        "invalid receive credit",
+	byte(protocol.ErrCapacity):           "tunnel stream reservation exhausted",
+	byte(protocol.ErrDatagramDropped):    "datagram dropped at finite queue limit",
+	byte(protocol.ErrInvalidFlowConfig):  "invalid finite flow limits",
+	byte(protocol.ErrInvalidBindTimeout): "BIND timeout must be positive",
+	byte(protocol.ErrJSHostProtocol):     "JS socket host contract violation",
+	byte(protocol.ErrJSHostUnsupported):  "JS socket host version 2 required",
+	byte(protocol.ErrReceivePanic):       "protocol receive loop panic",
+	byte(protocol.ErrWriteDrain):         "tunnel write drain failed",
+	byte(protocol.ErrDeliveryDrain):      "tunnel delivery drain forced to abort",
+	byte(protocol.ErrPeerDrain):          "peer close drain forced to abort",
+	byte(protocol.ErrBootstrapNamespace): "incomplete bootstrap namespace",
+
 	// Protocol packet errors
 	protocol.ErrInvalidPacket: "invalid protocol packet structure",
+}
+
+// ErrorDescription retains the code separately when a peer uses an unknown value.
+func ErrorDescription(code byte) string {
+	if text, ok := ErrToString[code]; ok {
+		return text
+	}
+	return "unknown protocol error"
+}
+
+func protocolErrorReporter(logger zerolog.Logger) func(uuid.UUID, byte) {
+	return func(id uuid.UUID, code byte) {
+		if code == protocol.ErrNone {
+			return
+		}
+		logger.Warn().Uint8("code", code).Str("conn_id", id.String()).Msg(ErrorDescription(code))
+	}
 }

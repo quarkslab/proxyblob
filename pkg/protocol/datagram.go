@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"errors"
 	"net"
 	"sync"
 
@@ -15,7 +14,7 @@ const MaxDatagramSize = 65507
 const DatagramQueueBytes = 256 << 10
 const DatagramQueuePackets = 64
 
-var ErrDatagramDropped = errors.New("protocol: datagram dropped at finite queue limit")
+// ErrDatagramDropped is a numeric sentinel declared in errors.go.
 
 type Datagrams struct {
 	conn    *Connection

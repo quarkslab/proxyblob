@@ -80,7 +80,7 @@ func listenUDPContext(parent context.Context) (UDPRelayConn, error) {
 		return nil
 	})
 	onError := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		err := jsSocketError(args, "udp socket error")
+		err := jsSocketError()
 		c.fail(err)
 		complete(err)
 		return nil

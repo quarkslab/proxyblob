@@ -47,6 +47,7 @@ func NewProxyServerWithConfig(ctx context.Context, conn net.Conn, cfg protocol.F
 	}
 	server := &ProxyServer{BaseHandler: base}
 	server.PacketHandler = server
+	server.OnError = protocolErrorReporter(log.Logger)
 	return server, nil
 }
 
@@ -171,6 +172,7 @@ func (s *ProxyServer) OnData(connectionID uuid.UUID, data []byte) byte {
 // OnClose handles connection termination from agents. It cleans up the
 // connection state.
 func (s *ProxyServer) OnClose(connectionID uuid.UUID, errorCode byte) byte {
+	s.ReportError(connectionID, errorCode)
 	return s.PeerClose(connectionID, errorCode)
 }
 

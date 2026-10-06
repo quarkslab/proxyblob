@@ -2,8 +2,11 @@
 package protocol
 
 import (
+	"context"
 	"errors"
 	"net"
+	"os"
+	"strconv"
 )
 
 // Protocol error codes for agent-server communication.
@@ -83,4 +86,49 @@ func MapNetError(err error) byte {
 
 	// Default to connection refused
 	return ErrConnectionRefused
+}
+
+// Error carries an application-owned diagnostic without an agent-side description.
+// Existing byte wire codes are unchanged. Codes below 128 may be used by local
+// diagnostics; adding one does not introduce a new packet or protocol version.
+type Error byte
+
+func (e Error) Error() string { return strconv.Itoa(int(e)) }
+
+// Local diagnostic errors. These are not new wire messages.
+const (
+	ErrShortPacket        Error = 41
+	ErrMalformedPacket    Error = 42
+	ErrUnsupportedVersion Error = 43
+	ErrFlowControl        Error = 44
+	ErrCapacity           Error = 45
+	ErrDatagramDropped    Error = 46
+	ErrInvalidFlowConfig  Error = 47
+	ErrInvalidBindTimeout Error = 48
+	ErrJSHostProtocol     Error = 49
+	ErrJSHostUnsupported  Error = 50
+	ErrReceivePanic       Error = 51
+	ErrWriteDrain         Error = 52
+	ErrDeliveryDrain      Error = 53
+	ErrPeerDrain          Error = 54
+	ErrBootstrapNamespace Error = 55
+)
+
+// ErrorCode never formats an underlying error (which may contain credentials).
+// It preserves our numeric diagnostics through wrappers and sanitizes other causes.
+func ErrorCode(err error) byte {
+	if err == nil {
+		return ErrNone
+	}
+	var code Error
+	if errors.As(err, &code) {
+		return byte(code)
+	}
+	if errors.Is(err, context.Canceled) {
+		return ErrContextCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return ErrTransportTimeout
+	}
+	return ErrTransportError
 }

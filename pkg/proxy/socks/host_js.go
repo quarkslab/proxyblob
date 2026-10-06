@@ -4,7 +4,7 @@ package proxy
 
 import (
 	"errors"
-	"fmt"
+	"proxyblob/pkg/protocol"
 	"sync"
 	"syscall/js"
 )
@@ -14,7 +14,7 @@ import (
 func requireJSHost(name string) error {
 	v := js.Global().Get("ProxyBlobSocketHostVersion")
 	if v.Type() != js.TypeNumber || v.Float() != 2 || js.Global().Get(name).Type() != js.TypeFunction {
-		return fmt.Errorf("%s requires ProxyBlob socket host version 2: %w", name, errors.ErrUnsupported)
+		return errors.Join(protocol.ErrJSHostUnsupported, errors.ErrUnsupported)
 	}
 	return nil
 }
@@ -37,9 +37,6 @@ func (l *jsLifetime) dispose() {
 	})
 }
 
-func jsSocketError(args []js.Value, fallback string) error {
-	if len(args) > 0 && args[0].Type() == js.TypeString {
-		return errors.New(args[0].String())
-	}
-	return errors.New(fallback)
+func jsSocketError() error {
+	return protocol.Error(protocol.ErrTransportError)
 }
