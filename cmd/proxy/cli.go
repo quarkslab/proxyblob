@@ -105,6 +105,7 @@ func AddCommands(app *grumble.App) {
 				log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to stop listener")
 				return nil
 			}
+			log.Info().Str("listener_id", listenerID).Msg("Listener stopped")
 			return nil
 		},
 	})
@@ -171,7 +172,7 @@ func AddCommands(app *grumble.App) {
 			}
 
 			if listenerID == "" {
-				log.Error().Msg("No listener specified and no default listener selected. Use 'listener start <id>' to start a listener (it becomes the default), or use 'listener select <id>' to select a default, or use --listener flag to specify a listener")
+				log.Error().Msg("No listener selected. Run 'listener start <id>' first.")
 				return nil
 			}
 
