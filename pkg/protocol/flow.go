@@ -2,8 +2,6 @@ package protocol
 
 import (
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"math"
 	"net"
 	"os"
@@ -45,7 +43,7 @@ func (c FlowConfig) validate() error {
 		c.BatchBytes < max(c.DataFrame, 12)+HeaderSize || c.BatchBytes > 16<<20 ||
 		c.ControlSlots < 4*c.MaxStreams || c.ControlSlots > 1<<20 ||
 		c.DrainTimeout <= 0 || c.UDPQueueBytes < 1 || c.UDPQueueBytes > 16<<20 || c.UDPQueuePackets < 1 || c.UDPQueuePackets > 4096 || c.UDPDestinations < 1 || c.UDPDestinations > 4096 {
-		return errors.New("protocol: invalid finite flow limits")
+		return ErrInvalidFlowConfig
 	}
 	return nil
 }
@@ -53,10 +51,6 @@ func (c FlowConfig) validate() error {
 // Version 3 adds proxy-owned UDP associations and datagram records.
 // Empty (legacy) NEW/ACK payloads are explicitly unsupported, never sniffed.
 const ProtocolVersion uint32 = 3
-
-var ErrUnsupportedVersion = errors.New("protocol: unsupported version")
-var ErrFlowControl = errors.New("protocol: invalid receive credit")
-var ErrCapacity = errors.New("protocol: tunnel stream reservation exhausted")
 
 func (h *BaseHandler) handshake() []byte {
 	b := make([]byte, 12)
@@ -91,7 +85,7 @@ func (h *BaseHandler) RegisterConnection(c *Connection) error {
 		return ErrCapacity
 	}
 	if _, exists := h.Connections.Load(c.ID); exists {
-		return fmt.Errorf("protocol: duplicate stream")
+		return Error(ErrConnectionExists)
 	}
 	c.deliveryMu.Lock()
 	select {
@@ -207,7 +201,7 @@ func FlowConfigFromEnv() (FlowConfig, error) {
 		if value, ok := os.LookupEnv(name); ok {
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return c, fmt.Errorf("%s: %w", name, err)
+				return c, ErrInvalidFlowConfig
 			}
 			*target = n
 		}
@@ -215,7 +209,7 @@ func FlowConfigFromEnv() (FlowConfig, error) {
 	if value, ok := os.LookupEnv("PROXYBLOB_DRAIN_TIMEOUT"); ok {
 		duration, err := time.ParseDuration(value)
 		if err != nil {
-			return c, err
+			return c, ErrInvalidFlowConfig
 		}
 		c.DrainTimeout = duration
 	}

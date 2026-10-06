@@ -4,8 +4,8 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"net"
+	"proxyblob/pkg/protocol"
 	"strconv"
 	"syscall/js"
 	"time"
@@ -44,14 +44,14 @@ func resolveUDPContext(parent context.Context, address string) (*net.UDPAddr, er
 	success := js.FuncOf(func(_ js.Value, args []js.Value) any {
 		ip := net.ParseIP(args[0].String())
 		if ip == nil {
-			finish(result{err: errors.New("UDPResolve returned invalid IP")})
+			finish(result{err: protocol.ErrJSHostProtocol})
 		} else {
 			finish(result{ip: ip})
 		}
 		return nil
 	})
 	failure := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		finish(result{err: jsSocketError(args, "UDP resolution failed")})
+		finish(result{err: jsSocketError()})
 		return nil
 	})
 	life := jsLifetime{callbacks: []js.Func{success, failure}}

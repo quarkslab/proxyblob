@@ -8,7 +8,6 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 
 	"github.com/google/uuid"
 )
@@ -17,17 +16,6 @@ import (
 // It bounds the size of a reassembly accumulator: a caller buffering a packet
 // never needs to hold more than HeaderSize + MaxPacketDataSize bytes.
 const MaxPacketDataSize = 1 << 20
-
-// Parsing errors returned by ParseNext.
-var (
-	// ErrShortPacket means the buffer holds only part of a packet. The framing
-	// seen so far is valid, so the caller should read more bytes and retry.
-	ErrShortPacket = errors.New("protocol: incomplete packet")
-
-	// ErrMalformedPacket means the header itself is invalid. The byte stream is
-	// desynchronized and cannot be recovered by reading more bytes.
-	ErrMalformedPacket = errors.New("protocol: malformed framing")
-)
 
 // Command types for protocol operations.
 const (

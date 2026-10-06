@@ -5,7 +5,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -33,7 +32,7 @@ type Option func(*SocksHandler) error
 func WithBindTimeout(d time.Duration) Option {
 	return func(h *SocksHandler) error {
 		if d <= 0 {
-			return fmt.Errorf("BIND timeout must be positive")
+			return protocol.ErrInvalidBindTimeout
 		}
 		h.bindTimeout = d
 		return nil

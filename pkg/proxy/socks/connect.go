@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"fmt"
 	"net"
 
 	"proxyblob/pkg/protocol"
@@ -33,8 +32,6 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 		h.SendError(conn, errCode)
 		return errCode
 	}
-
-	fmt.Printf("[CONNECT] %s\n", target)
 
 	// Establish TCP connection to target (uses Bun bridge on WASM, native net on other platforms)
 	setupCtx, cancelSetup := socketSetupContext(h.Ctx, conn.Closed)

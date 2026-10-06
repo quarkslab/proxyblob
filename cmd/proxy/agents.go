@@ -103,7 +103,7 @@ func acceptAgentLoop(ctx context.Context, listenerID string, state *ListenerStat
 		agent.setLastSeen(agent.CreatedAt)
 		cfg, err := protocol.FlowConfigFromEnv()
 		if err != nil {
-			log.Error().Err(err).Msg("Invalid flow limits")
+			log.Error().Uint8("code", protocol.ErrorCode(err)).Msg(proxy.ErrorDescription(protocol.ErrorCode(err)))
 			conn.Close()
 			continue
 		}

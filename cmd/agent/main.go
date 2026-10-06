@@ -16,9 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-
 	"proxyblob/pkg/protocol"
 	proxy "proxyblob/pkg/proxy/socks"
 
@@ -60,7 +57,7 @@ func connectionOptions(address string) ([]aznet.Option, error) {
 		return nil, nil
 	}
 	if h == "" || t == "" || h == t || q.Get(h) == "" || q.Get(t) == "" {
-		return nil, fmt.Errorf("incomplete bootstrap namespace")
+		return nil, protocol.ErrBootstrapNamespace
 	}
 	return []aznet.Option{aznet.WithEndpoints(h, t)}, nil
 }
@@ -83,10 +80,9 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	opts = append(opts, aznet.WithContext(ctx))
 	conn, err := aznet.Dial(driver, address, opts...)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to dial proxy")
+		reportError(protocol.ErrorCode(err))
 		return nil, ErrConnectionStringError
 	}
-	log.Info().Msg("Connected to proxy")
 
 	// Send identity (user@host) as the first message, before the record protocol starts.
 	//
@@ -108,7 +104,7 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 		// Fatal for this connection: a partial identity leaves unconsumed bytes at the
 		// head of the peer's stream, which would be parsed as a record header and
 		// desynchronize framing permanently. Aborting is strictly safer than continuing.
-		log.Error().Err(err).Msg("Failed to send identity")
+		reportError(protocol.ErrorCode(err))
 		conn.Close()
 		return nil, ErrIdentityExchange
 	}
@@ -116,7 +112,7 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	// Create SOCKS handler with direct connection (no transport wrapper)
 	cfg, err := protocol.FlowConfigFromEnv()
 	if err != nil {
-		log.Error().Err(err).Msg("Invalid flow limits")
+		reportError(protocol.ErrorCode(err))
 		conn.Close()
 		return nil, ErrConnectionStringError
 	}
@@ -191,16 +187,10 @@ func getIdentity() string {
 	return fmt.Sprintf("%s@%s", username, hostname)
 }
 
-// init configures logging with zerolog
-// Sets up console output and INFO level logging
+// reportError emits only a numeric diagnostic; exit codes retain their existing meaning.
+func reportError(code byte) { fmt.Fprintln(os.Stderr, code) }
+
 func init() {
-	// Configure logging
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-
-	// Use a more human-friendly output for console
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-
 	go func() {
 		for {
 			time.Sleep(time.Hour)

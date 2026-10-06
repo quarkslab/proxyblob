@@ -6,12 +6,10 @@ import (
 	"io"
 	"net"
 	"os"
-	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rs/zerolog/log"
 )
 
 // PacketHandler processes protocol packets and manages connection lifecycle.
@@ -77,6 +75,10 @@ type BaseHandler struct {
 	// OnReceive is called on every successful packet read (optional)
 	OnReceive func()
 
+	// OnError receives sanitized numeric diagnostics. Set before ReceiveLoop starts;
+	// it must be concurrency-safe. Nil emits only the numeric code locally.
+	OnError func(uuid.UUID, byte)
+
 	// PacketHandler routes packets to specific handlers
 	PacketHandler
 }
@@ -136,10 +138,7 @@ func (h *BaseHandler) ReceiveLoop() {
 	// Contain it and tear down only this handler.
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error().
-				Interface("panic", r).
-				Str("stack", string(debug.Stack())).
-				Msg("Recovered panic in protocol receive loop")
+			h.ReportError(uuid.Nil, byte(ErrReceivePanic))
 			h.Stop()
 		}
 	}()
@@ -205,10 +204,7 @@ func (h *BaseHandler) ReceiveLoop() {
 					// no resync point, and the uuid in a bogus header is garbage, so
 					// closing "just that connection" would target a random one while
 					// the stream stayed misaligned. Tear the handler down.
-					log.Error().
-						Err(perr).
-						Int("buffered", len(acc)-offset).
-						Msg("Malformed protocol framing, tearing down handler")
+					h.ReportError(uuid.Nil, ErrorCode(perr))
 					h.Stop()
 					return
 				}
@@ -259,10 +255,7 @@ func (h *BaseHandler) ReceiveLoop() {
 			// Transient error: exponential backoff (100ms, 200ms, 400ms, ... capped at 5s)
 			consecutiveErrors++
 			if consecutiveErrors >= maxConsecutiveErrors {
-				log.Error().
-					Err(err).
-					Int("consecutive", consecutiveErrors).
-					Msg("Transport failing persistently, tearing down handler")
+				h.ReportError(uuid.Nil, ErrorCode(err))
 				h.Stop()
 				return
 			}
@@ -419,12 +412,12 @@ func (h *BaseHandler) drainReceived(readErr error) {
 	case <-done:
 		if h.writerDone != nil {
 			if err := h.Drain(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				log.Warn().Err(err).Msg("Tunnel write drain failed")
+				h.ReportError(uuid.Nil, byte(ErrWriteDrain))
 			}
 		}
 	case <-ctx.Done():
 		if !errors.Is(ctx.Err(), context.Canceled) {
-			log.Warn().Err(ctx.Err()).Msg("Tunnel delivery drain forced to abort")
+			h.ReportError(uuid.Nil, byte(ErrDeliveryDrain))
 		}
 	}
 }
@@ -465,7 +458,7 @@ func (h *BaseHandler) PeerClose(id uuid.UUID, code byte) byte {
 			select {
 			case <-c.Closed:
 			case <-timer.C:
-				log.Warn().Str("conn_id", id.String()).Msg("Peer close drain forced to abort")
+				h.ReportError(id, byte(ErrPeerDrain))
 				c.Close()
 				h.Connections.CompareAndDelete(id, c)
 			}
@@ -476,7 +469,7 @@ func (h *BaseHandler) PeerClose(id uuid.UUID, code byte) byte {
 }
 
 func (h *BaseHandler) badHandshake(err error) byte {
-	log.Error().Err(err).Uint32("supported_version", ProtocolVersion).Msg("Tunnel protocol negotiation rejected")
+	h.ReportError(uuid.Nil, ErrorCode(err))
 	h.Cancel()
 	return ErrInvalidPacket
 }

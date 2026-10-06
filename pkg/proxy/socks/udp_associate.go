@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
 	"proxyblob/pkg/protocol"
 )
 
@@ -55,7 +54,7 @@ func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []b
 	}
 	err = h.relayAgentUDP(conn, d, socket)
 	if err != nil && !errors.Is(err, net.ErrClosed) {
-		log.Warn().Err(err).Msg("Agent UDP relay stopped")
+		h.ReportError(conn.ID, protocol.ErrorCode(err))
 	}
 	h.SendClose(conn.ID, protocol.ErrNone)
 	return protocol.ErrNone
@@ -118,7 +117,7 @@ func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagra
 		addr, err := resolveUDPContext(ctx, target)
 		cancel()
 		if err != nil {
-			log.Debug().Err(err).Msg("UDP destination resolution failed")
+			// Resolution failure drops this datagram; avoid per-packet diagnostics.
 			continue
 		}
 		mu.Lock()

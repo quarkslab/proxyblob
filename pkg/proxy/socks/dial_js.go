@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/pkg/protocol"
 	"sync"
 	"syscall/js"
 	"time"
@@ -16,7 +17,7 @@ import (
 // buffer are bounded; consuming the chunk grants the next pull.
 const jsTCPChunkBytes = 64 * 1024
 
-var errJSHostProtocol = errors.New("JS socket host contract violation")
+var errJSHostProtocol = protocol.ErrJSHostProtocol
 
 type jsConn struct {
 	writeMu    sync.Mutex
@@ -100,7 +101,7 @@ func dialTCPContext(parent context.Context, target string) (net.Conn, error) {
 		return nil
 	})
 	onError := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		err := jsSocketError(args, "connection error")
+		err := jsSocketError()
 		c.fail(err)
 		complete(err)
 		return nil
