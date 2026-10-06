@@ -57,6 +57,10 @@ var ErrToString = map[byte]string{
 	byte(protocol.ErrPeerDrain):          "peer close drain forced to abort",
 	byte(protocol.ErrBootstrapNamespace): "incomplete bootstrap namespace",
 
+	byte(protocol.ErrNoBindPeers):     "no BIND peer addresses",
+	byte(protocol.ErrNoDNSAddresses):  "no DNS addresses",
+	byte(protocol.ErrNoBindInterface): "no usable interface for wildcard BIND",
+
 	// Protocol packet errors
 	protocol.ErrInvalidPacket: "invalid protocol packet structure",
 }

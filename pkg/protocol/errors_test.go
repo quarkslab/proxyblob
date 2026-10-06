@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"testing"
 )
 
@@ -41,5 +42,17 @@ func TestInvalidFlowEnvironmentDoesNotExposeInput(t *testing.T) {
 				t.Fatalf("unsanitized config failure: %v", err)
 			}
 		})
+	}
+}
+
+func TestNumericBindFailuresPreserveSOCKSMapping(t *testing.T) {
+	for _, tc := range []struct{ before, after error }{
+		{&net.AddrError{Err: "no BIND peer addresses"}, ErrNoBindPeers},
+		{&net.DNSError{Err: "no addresses"}, ErrNoDNSAddresses},
+		{&net.AddrError{Err: "no usable interface for wildcard BIND"}, ErrNoBindInterface},
+	} {
+		if MapNetError(tc.before) != MapNetError(tc.after) {
+			t.Fatalf("SOCKS mapping changed for %v", tc.after)
+		}
 	}
 }

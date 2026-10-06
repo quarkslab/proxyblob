@@ -74,6 +74,11 @@ func MapNetError(err error) byte {
 		}
 	}
 
+	// Preserve the empty-resolution failure without an agent-side explanation.
+	if errors.Is(err, ErrNoDNSAddresses) {
+		return ErrHostUnreachable
+	}
+
 	// Check for DNS errors
 	if _, ok := err.(*net.DNSError); ok {
 		return ErrHostUnreachable
@@ -112,6 +117,9 @@ const (
 	ErrDeliveryDrain      Error = 53
 	ErrPeerDrain          Error = 54
 	ErrBootstrapNamespace Error = 55
+	ErrNoBindPeers        Error = 56
+	ErrNoDNSAddresses     Error = 57
+	ErrNoBindInterface    Error = 58
 )
 
 // ErrorCode never formats an underlying error (which may contain credentials).

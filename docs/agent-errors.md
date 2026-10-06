@@ -36,6 +36,7 @@ Existing wire error values 0–40 remain unchanged. Local diagnostic values are:
 | 51 | Receive-loop panic |
 | 52 / 53 / 54 | Write drain / delivery drain / peer-close drain failure |
 | 55 | Incomplete bootstrap namespace |
+| 56 / 57 / 58 | No BIND peer addresses / no DNS addresses / no usable wildcard BIND interface |
 
 These additions are local diagnostic values, not new wire records. Protocol
 version 3, commands, framing and SOCKS reply values are unchanged. A SOCKS setup

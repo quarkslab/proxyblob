@@ -4,7 +4,9 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
+	"proxyblob/pkg/protocol"
 	"testing"
 )
 
@@ -28,4 +30,14 @@ func TestBindTriesUsableCandidateAfterUnusableAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	accepted.Close()
+}
+
+func TestBindWithoutCandidatesUsesNumericError(t *testing.T) {
+	listener, err := listenBind(context.Background(), nil)
+	if listener != nil || !errors.Is(err, protocol.ErrNoBindPeers) || err.Error() != "56" {
+		t.Fatalf("unexpected empty BIND result: %v", err)
+	}
+	if got := protocol.MapNetError(err); got != protocol.ErrConnectionRefused {
+		t.Fatalf("changed SOCKS failure code: %d", got)
+	}
 }

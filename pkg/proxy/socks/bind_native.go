@@ -120,7 +120,7 @@ func listenBind(ctx context.Context, ips []net.IPAddr) (net.Listener, error) {
 		last = err
 	}
 	if last == nil {
-		last = &net.AddrError{Err: "no BIND peer addresses"}
+		last = protocol.ErrNoBindPeers
 	}
 	return nil, last
 }
@@ -139,7 +139,7 @@ func bindPeer(ctx context.Context, target string) ([]net.IPAddr, int, error) {
 		return nil, 0, err
 	}
 	if len(ips) == 0 {
-		return nil, 0, &net.DNSError{Err: "no addresses", Name: host}
+		return nil, 0, protocol.ErrNoDNSAddresses
 	}
 	return ips, port, nil
 }
@@ -168,7 +168,7 @@ func bindLocal(ctx context.Context, peer net.IPAddr) (*net.UDPAddr, error) {
 				}
 			}
 		}
-		return nil, &net.AddrError{Err: "no usable interface for wildcard BIND", Addr: peer.String()}
+		return nil, protocol.ErrNoBindInterface
 	}
 	network := "udp6"
 	if peer.IP.To4() != nil {
