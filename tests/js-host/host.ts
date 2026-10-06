@@ -19,7 +19,7 @@ export interface TCPHandle extends Handle {
   read(maxBytes: number): void;
 }
 export interface TCPSocket {
-  write(data: Uint8Array): number;
+  write(data: Uint8Array): number | "would-block";
   end(): void;
 }
 export interface UDPSocket {
@@ -30,6 +30,7 @@ type TCPCallbacks = {
   data(socket: TCPSocket, data: Uint8Array): void;
   eof(): void;
   error(message: string): void;
+  writable(): void;
 };
 type UDPCallbacks = {
   bind(socket: UDPSocket, port: number): void;
@@ -53,6 +54,8 @@ export const stats = {
   maxTCPReadable: 0,
   maxTCPChunk: 0,
   maxUDPInFlight: 0,
+  writeStalls: 0,
+  maxTCPWritable: 0,
 };
 
 // Bun's Socket.read() resumes native input even while bytes remain buffered.
@@ -75,8 +78,15 @@ export function TCPDial(
   data: TCPCallbacks["data"],
   eof: TCPCallbacks["eof"],
   error: TCPCallbacks["error"],
+  writable: TCPCallbacks["writable"],
 ): TCPHandle {
-  let callbacks: TCPCallbacks | undefined = { connect, data, eof, error };
+  let callbacks: TCPCallbacks | undefined = {
+    connect,
+    data,
+    eof,
+    error,
+    writable,
+  };
   // A Socket exists before DNS/connect starts, so destroy cancels pending I/O.
   const options = { allowHalfOpen: true, highWaterMark: CHUNK_BYTES };
   const socket = new PullSocket(options);
@@ -89,13 +99,20 @@ export function TCPDial(
   let writeEnded = false;
   stats.active++;
   stats.sockets++;
-  stats.callbacks += 4;
+  stats.callbacks += 5;
   const facade: TCPSocket = {
     write(bytes) {
       if (!callbacks || socket.destroyed || writeEnded) return 0;
-      if (bytes.length > WRITE_BYTES - socket.writableLength) return 0;
+      if (bytes.length > WRITE_BYTES - socket.writableLength) {
+        stats.writeStalls++;
+        return "would-block";
+      }
       try {
         socket.write(bytes);
+        stats.maxTCPWritable = Math.max(
+          stats.maxTCPWritable,
+          socket.writableLength,
+        );
         return bytes.length;
       } catch (err) {
         queueMicrotask(() => callbacks?.error(String(err)));
@@ -176,6 +193,7 @@ export function TCPDial(
     callbacks.connect(facade);
     schedule();
   });
+  socket.on("drain", () => queueMicrotask(() => callbacks?.writable()));
   socket.on("error", (err) => callbacks?.error(err.message));
   socket.on("close", (hadError) => {
     stats.sockets--;
@@ -202,7 +220,7 @@ export function TCPDial(
       callbacks = undefined;
       requested = 0;
       stats.active--;
-      stats.callbacks -= 4;
+      stats.callbacks -= 5;
       stats.disposed++;
       socket.destroy();
     },
@@ -228,6 +246,30 @@ export function UDPListen(
   let socket: DatagramSocket | undefined;
   let bound = false;
   let inFlight = 0;
+  let closing = false;
+  let counted = false;
+  function socketClosed() {
+    if (counted) {
+      counted = false;
+      stats.sockets--;
+    }
+  }
+  function closeSocket() {
+    if (!socket || closing) return;
+    closing = true;
+    try {
+      socket.close();
+    } catch (err) {
+      if (
+        (err as NodeJS.ErrnoException).code === "ERR_SOCKET_DGRAM_NOT_RUNNING"
+      )
+        socketClosed();
+      else {
+        closing = false;
+        console.error("UDP disposal failed", err);
+      }
+    }
+  }
   stats.active++;
   stats.callbacks += 3;
   const facade: UDPSocket = {
@@ -264,7 +306,7 @@ export function UDPListen(
       stats.disposed++;
       // Bind starts only in the scheduled task below. A pending bind's listening
       // callback closes the late socket without ever calling into Go.
-      if (bound) socket?.close();
+      closeSocket();
     },
   };
   queueMicrotask(() => {
@@ -272,9 +314,8 @@ export function UDPListen(
     try {
       socket = createSocket("udp4");
       stats.sockets++;
-      socket.on("close", () => {
-        stats.sockets--;
-      });
+      counted = true;
+      socket.on("close", socketClosed);
       socket.on("error", (err) => callbacks?.error(err.message));
       socket.on("message", (bytes, peer) =>
         callbacks?.data(facade, bytes, peer.port, peer.address),
@@ -282,7 +323,7 @@ export function UDPListen(
       socket.on("listening", () => {
         bound = true;
         if (!callbacks) {
-          socket?.close();
+          closeSocket();
           return;
         }
         callbacks.bind(facade, socket!.address().port);

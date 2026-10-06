@@ -1,3 +1,4 @@
+import { Socket as DatagramSocket, createSocket } from "node:dgram";
 import { test, expect } from "bun:test";
 import {
   TCPDial,
@@ -24,6 +25,7 @@ test("pending TCP and UDP disposal detaches queued callbacks exactly once", asyn
     const tcp = TCPDial(
       "127.0.0.1",
       "1",
+      () => called++,
       () => called++,
       () => called++,
       () => called++,
@@ -76,6 +78,7 @@ test("real TCP refused connection is terminal and disposable", async () => {
         handle.dispose();
         resolve();
       },
+      () => {},
     );
   });
   await drained();
@@ -115,6 +118,7 @@ test("Bun host preserves a paused real stream, bounded chunks, and EOF ordering"
         },
         resolve,
         (message) => reject(new Error(message)),
+        () => {},
       );
     });
     const bytes = Buffer.concat(chunks);
@@ -142,4 +146,33 @@ test("real UDP socket disposal closes the resource", async () => {
     );
   });
   await drained();
+});
+
+test("real UDP bind failure closes the created socket", async () => {
+  const occupied = createSocket("udp4");
+  await new Promise<void>((resolve) => occupied.bind(0, "127.0.0.1", resolve));
+  const original = DatagramSocket.prototype.bind;
+  const port = occupied.address().port;
+  DatagramSocket.prototype.bind = function (this: DatagramSocket) {
+    return original.call(this, { port, address: "127.0.0.1" });
+  };
+  let handle: Handle | undefined;
+  try {
+    const message = await new Promise<string>((resolve, reject) => {
+      handle = UDPListen(
+        () => reject(new Error("unexpected bind")),
+        () => {},
+        (message) => {
+          handle!.dispose();
+          resolve(message);
+        },
+      );
+    });
+    expect(message).toContain("EADDRINUSE");
+    await drained();
+  } finally {
+    DatagramSocket.prototype.bind = original;
+    handle?.dispose();
+    await new Promise<void>((resolve) => occupied.close(resolve));
+  }
 });

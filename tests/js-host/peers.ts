@@ -26,6 +26,13 @@ export async function startPeers() {
       socket.end();
     });
   });
+  const slowSink = await listen((socket) => {
+    const chunks: Buffer[] = [];
+    socket.pause();
+    socket.on("data", (bytes) => chunks.push(Buffer.from(bytes)));
+    socket.on("end", () => socket.end(Buffer.concat(chunks)));
+    setTimeout(() => socket.resume(), 100);
+  });
   const peerFIN = await listen((socket) => {
     socket.write("peer-fin");
     socket.end();
@@ -50,7 +57,7 @@ export async function startPeers() {
   udp.on("message", (bytes, peer) => udp.send(bytes, peer.port, peer.address));
   await new Promise<void>((resolve) => udp.bind(0, "127.0.0.1", resolve));
   return {
-    ports: { response, peerFIN, bulk, udp: udp.address().port },
+    ports: { response, peerFIN, bulk, slowSink, udp: udp.address().port },
     async close() {
       for (const socket of sockets) socket.destroy();
       await Promise.all(

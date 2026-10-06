@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -28,7 +29,7 @@ func testJSHost(t *testing.T, mode string) js.Value {
  function start(c){callbacks=c;probes=c.slice();queueMicrotask(()=>{if(!callbacks)return;
  if(state.mode==="connect")callbacks[0](socket,12345);
  if(state.mode==="close")callbacks[2]();
- if(state.mode==="error")callbacks[c.length-1]("setup failure");
+ if(state.mode==="error")callbacks[c.length===3?2:3]("setup failure");
  });return handle}
  state.tcp=(host,port,...c)=>start(c);state.udp=(...c)=>start(c);
  // Diagnostic references are never dispatched as socket events. Probing them
@@ -74,7 +75,7 @@ func TestJSCallbacksReleasedAfterHostDetachment(t *testing.T) {
 	for _, udp := range []bool{false, true} {
 		t.Run(strconv.FormatBool(udp), func(t *testing.T) {
 			state := testJSHost(t, "connect")
-			count := 4
+			count := 5
 			if udp {
 				c, err := listenUDP()
 				if err != nil {
@@ -407,5 +408,77 @@ func TestJSLoopbackUDP(t *testing.T) {
 	n, addr, err := c.ReadFrom(b)
 	if string(b[:n]) != "datagram" || err != nil || addr.Port != port {
 		t.Fatalf("UDP echo: %q %v %v", b[:n], addr, err)
+	}
+}
+
+func TestJSWriteBackpressureAndCancellation(t *testing.T) {
+	for _, abort := range []bool{false, true} {
+		t.Run(strconv.FormatBool(abort), func(t *testing.T) {
+			state := testJSHost(t, "connect")
+			state.Set("writeCount", "would-block")
+			c, err := dialTCP("127.0.0.1:80")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			result := make(chan error, 1)
+			go func() {
+				n, e := c.Write([]byte("data"))
+				if e == nil && n != 4 {
+					e = io.ErrShortWrite
+				}
+				result <- e
+			}()
+			// Barrier: on a stalled write no completion is allowed before readiness.
+			flushJSHost(state)
+			select {
+			case err := <-result:
+				t.Fatalf("write completed before readiness: %v", err)
+			default:
+			}
+			if abort {
+				c.Close()
+			} else {
+				state.Set("writeCount", 4)
+				state.Call("emit", 4)
+			}
+			select {
+			case err := <-result:
+				if abort && !errors.Is(err, net.ErrClosed) || !abort && err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("write did not wake")
+			}
+			c.Close()
+			assertDisposed(t, state)
+		})
+	}
+}
+
+func TestJSLoopbackSlowWriterByteIdentity(t *testing.T) {
+	c := realTCP(t, "slowSink")
+	before := js.Global().Call("ProxyBlobHostStats").Get("writeStalls").Int()
+	payload := make([]byte, 4*1024*1024)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	n, err := c.Write(payload)
+	if n != len(payload) || err != nil {
+		t.Fatalf("slow write: %d %v", n, err)
+	}
+	if err = c.(*jsConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(c)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("slow write echo length %d: %v", len(got), err)
+	}
+	stats := js.Global().Call("ProxyBlobHostStats")
+	if stats.Get("writeStalls").Int() <= before {
+		t.Fatal("test did not exercise host write backpressure")
+	}
+	if stats.Get("maxTCPWritable").Int() > 256*1024 {
+		t.Fatal("host write queue exceeded byte bound")
 	}
 }

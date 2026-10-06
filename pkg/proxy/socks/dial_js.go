@@ -19,6 +19,7 @@ const jsTCPChunkBytes = 64 * 1024
 var errJSHostProtocol = errors.New("JS socket host contract violation")
 
 type jsConn struct {
+	writeMu    sync.Mutex
 	life       jsLifetime
 	mu         sync.Mutex
 	socket     js.Value
@@ -104,10 +105,18 @@ func dialTCPContext(parent context.Context, target string) (net.Conn, error) {
 		complete(err)
 		return nil
 	})
-	c.life.callbacks = []js.Func{onConnect, onData, onClose, onError}
+	onWritable := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		c.mu.Lock()
+		if c.err == nil {
+			c.signal()
+		}
+		c.mu.Unlock()
+		return nil
+	})
+	c.life.callbacks = []js.Func{onConnect, onData, onClose, onError, onWritable}
 	// Host v2 never invokes a callback inline. The handle is installed before
 	// any callback can run, so every terminal path can detach and release safely.
-	c.life.handle = js.Global().Call("TCPDial", host, port, onConnect, onData, onClose, onError)
+	c.life.handle = js.Global().Call("TCPDial", host, port, onConnect, onData, onClose, onError, onWritable)
 	select {
 	case err = <-done:
 	case <-ctx.Done():
@@ -174,31 +183,52 @@ func (c *jsConn) Read(b []byte) (int, error) {
 	}
 }
 func (c *jsConn) Write(b []byte) (int, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.err != nil {
-		return 0, c.err
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	written := 0
+	for {
+		c.mu.Lock()
+		if c.err != nil {
+			err := c.err
+			c.mu.Unlock()
+			return written, err
+		}
+		if c.writeEnded {
+			c.mu.Unlock()
+			return written, io.ErrClosedPipe
+		}
+		if written == len(b) {
+			c.mu.Unlock()
+			return written, nil
+		}
+		chunk := b[written:min(len(b), written+jsTCPChunkBytes)]
+		data := js.Global().Get("Uint8Array").New(len(chunk))
+		js.CopyBytesToJS(data, chunk)
+		result := c.socket.Call("write", data)
+		if result.Type() == js.TypeString && result.String() == "would-block" {
+			changed := c.changed
+			c.mu.Unlock()
+			<-changed
+			continue
+		}
+		c.mu.Unlock()
+		if result.Type() != js.TypeNumber {
+			return written, errors.ErrUnsupported
+		}
+		n := result.Int()
+		if result.Float() != float64(n) || n < 0 || n > len(chunk) {
+			return written, io.ErrShortWrite
+		}
+		written += n
+		if n < len(chunk) {
+			return written, io.ErrShortWrite
+		}
 	}
-	if c.writeEnded {
-		return 0, io.ErrClosedPipe
-	}
-	data := js.Global().Get("Uint8Array").New(len(b))
-	js.CopyBytesToJS(data, b)
-	result := c.socket.Call("write", data)
-	if result.Type() != js.TypeNumber {
-		return 0, errors.ErrUnsupported
-	}
-	n := result.Int()
-	if result.Float() != float64(n) || n < 0 || n > len(b) {
-		return 0, io.ErrShortWrite
-	}
-	if n < len(b) {
-		return n, io.ErrShortWrite
-	}
-	return n, nil
 }
 func (c *jsConn) Close() error { c.fail(net.ErrClosed); return nil }
 func (c *jsConn) CloseWrite() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.err != nil {

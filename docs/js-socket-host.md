@@ -8,10 +8,10 @@ passing these tests does not establish production browser or runner compatibilit
 
 ## Lifetime and scheduling
 
-The existing callback signatures remain:
+The setup/data/error callback arguments remain; TCP adds a writable notification:
 
 ```typescript
-TCPDial(host, port, onConnect, onData, onClose, onError): TCPHandle
+TCPDial(host, port, onConnect, onData, onClose, onError, onWritable): TCPHandle
 UDPListen(onBind, onData, onError): Handle
 
 interface Handle { dispose(): void }
@@ -33,9 +33,15 @@ resource is closed without invoking Go. Disposal must not invoke callbacks.
 Go calls `js.Func.Release` only after this barrier, once per callback. A host
 that advertises v2 without meeting this contract is unsupported.
 
-For TCP, `onConnect(socket)` exposes `write(Uint8Array): number` and `end(): void`.
+For TCP, `onConnect(socket)` exposes `write(Uint8Array): number | "would-block"` and `end(): void`.
 `write` reports the actual accepted byte count, including short or zero writes;
-acceptance is not an acknowledgement of remote delivery. `end()` sends local FIN
+acceptance is not an acknowledgement of remote delivery. A full finite write
+queue returns `"would-block"` without admitting bytes. The host must subsequently
+invoke `onWritable()` when capacity returns (or report an error). Go waits without
+holding its state mutex, wakes on readiness/close/error, and sends chunks of at
+most 64 KiB. A numeric short count remains an explicit short-write error.
+The harness bounds its write queue at 256 KiB; ordinary congestion waits instead
+of resetting the logical stream. `end()` sends local FIN
 after admitted writes and leaves reads alive. `onClose()` means **peer EOF**,
 ordered after all preceding data; it leaves writes alive. Neither FIN is resource
 disposal. The owner must eventually call `Close`, including after bidirectional
@@ -109,8 +115,8 @@ GOWORK=off GOOS=js GOARCH=wasm go test -mod=readonly \
 
 Bun additionally creates real loopback TCP/UDP peers: 4 MiB deterministic byte
 identity through a stalled reader, a healthy concurrent peer, EOF ordering,
-both half-close directions, and UDP echo. TypeScript tests exercise pending
-cancellation, late bind, refused connections, slow grants, and actual resource
+both half-close directions, a paused destination receiving a 4 MiB write, and UDP echo. TypeScript tests exercise pending
+cancellation, late/failed bind, refused connections, slow grants, and actual resource
 closure. End-of-run counters require zero live handles, callback references,
 and owned sockets. Go runtime timer handles are terminated only after owned
 socket cleanup and temporary-output removal.
