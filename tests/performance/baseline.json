@@ -2828,5 +2828,140 @@
       ],
       "cleanup_zero": true
     }
-  ]
+  ],
+  "sdk_go": "go1.26.5 darwin/arm64",
+  "live_blob_profiles": {
+    "before": {
+      "aznet_revision": "9e6683d",
+      "unit": "[count, total_nanoseconds]",
+      "roles": {
+        "proxy": {
+          "body_lock": [
+            378,
+            1005816106
+          ],
+          "get_body": [
+            378,
+            381407893
+          ],
+          "get_lock": [
+            746,
+            22758868280
+          ],
+          "get_sdk_headers": [
+            746,
+            94517731273
+          ],
+          "poll_wait": [
+            629,
+            13120492201
+          ],
+          "put_lock": [
+            118,
+            263521595
+          ],
+          "put_sdk": [
+            118,
+            25264681807
+          ]
+        },
+        "agent": {
+          "body_lock": [
+            393,
+            38360
+          ],
+          "get_body": [
+            393,
+            243100103
+          ],
+          "get_lock": [
+            763,
+            24854418543
+          ],
+          "get_sdk_headers": [
+            763,
+            91270329994
+          ],
+          "poll_wait": [
+            645,
+            15111126261
+          ],
+          "put_lock": [
+            119,
+            238774762
+          ],
+          "put_sdk": [
+            119,
+            26492146547
+          ]
+        }
+      }
+    },
+    "after": {
+      "aznet_revision": "7abcd80a7a2820d69e55deb1fc62f8b5a601f4be",
+      "unit": "[count, total_nanoseconds]",
+      "roles": {
+        "proxy": {
+          "body_lock": [
+            382,
+            182708
+          ],
+          "get_body": [
+            382,
+            264101928
+          ],
+          "get_lock": [
+            532,
+            240766
+          ],
+          "get_sdk_headers": [
+            532,
+            68910862802
+          ],
+          "poll_wait": [
+            414,
+            11751825750
+          ],
+          "put_lock": [
+            119,
+            39214
+          ],
+          "put_sdk": [
+            119,
+            27226200586
+          ]
+        },
+        "agent": {
+          "body_lock": [
+            395,
+            84886
+          ],
+          "get_body": [
+            395,
+            393783636
+          ],
+          "get_lock": [
+            538,
+            254775
+          ],
+          "get_sdk_headers": [
+            538,
+            67548034229
+          ],
+          "poll_wait": [
+            419,
+            13040099641
+          ],
+          "put_lock": [
+            120,
+            92542
+          ],
+          "put_sdk": [
+            120,
+            25993273705
+          ]
+        }
+      }
+    }
+  }
 }
