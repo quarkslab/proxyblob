@@ -38,18 +38,7 @@ func (h *SocksHandler) handleBind(c *protocol.Connection, data []byte) byte {
 		h.SendError(c, code)
 		return code
 	}
-	local, err := bindLocal(ctx, ips[0])
-	if err != nil {
-		code = protocol.MapNetError(err)
-		h.SendError(c, code)
-		return code
-	}
-	network := "tcp6"
-	if local.IP.To4() != nil {
-		network = "tcp4"
-	}
-	lc := net.ListenConfig{}
-	listener, err := lc.Listen(ctx, network, net.JoinHostPort(local.IP.String(), "0"))
+	listener, err := listenBind(ctx, ips)
 	if err != nil {
 		code = protocol.MapNetError(err)
 		h.SendError(c, code)
@@ -105,6 +94,35 @@ func (h *SocksHandler) handleBind(c *protocol.Connection, data []byte) byte {
 		}
 		return h.handleTCPDataTransfer(c, owned)
 	}
+}
+
+// Try all DNS candidates; an unavailable family must not hide a usable route.
+func listenBind(ctx context.Context, ips []net.IPAddr) (net.Listener, error) {
+	var last error
+	for _, ip := range ips {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		local, err := bindLocal(ctx, ip)
+		if err != nil {
+			last = err
+			continue
+		}
+		network := "tcp6"
+		if local.IP.To4() != nil {
+			network = "tcp4"
+		}
+		lc := net.ListenConfig{}
+		listener, err := lc.Listen(ctx, network, net.JoinHostPort(local.IP.String(), "0"))
+		if err == nil {
+			return listener, nil
+		}
+		last = err
+	}
+	if last == nil {
+		last = &net.AddrError{Err: "no BIND peer addresses"}
+	}
+	return nil, last
 }
 
 func bindPeer(ctx context.Context, target string) ([]net.IPAddr, int, error) {

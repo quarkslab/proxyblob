@@ -279,3 +279,43 @@ func TestPartialSOCKSRequestClosesWithoutListener(t *testing.T) {
 		t.Fatalf("partial request %x %v", got, err)
 	}
 }
+
+func TestBindAcceptedSocketClosesOnConcurrentTunnelAbort(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		s, agent := udpTunnel(t, "127.0.0.1:0")
+		c := socksClient(t, s, []byte{5, 1, 0})
+		socksCommand(t, c, 2, []byte{1, 127, 0, 0, 1, 0, 0})
+		bound := socksReply(t, c, 0)
+		peer, err := net.DialTCP("tcp4", nil, bound)
+		if err != nil {
+			t.Fatal(err)
+		}
+		socksReply(t, c, 0)
+		// Both copy directions are waiting; concurrent abort must release both sockets.
+		done := make(chan struct{}, 2)
+		for j := 0; j < 2; j++ {
+			go func() { agent.Stop(); done <- struct{}{} }()
+		}
+		<-done
+		<-done
+		peer.SetDeadline(time.Now().Add(time.Second))
+		var buf [1]byte
+		if _, err := peer.Read(buf[:]); err == nil {
+			t.Fatal("peer remained open")
+		} else if e, ok := err.(net.Error); ok && e.Timeout() {
+			t.Fatal("accepted socket leaked")
+		}
+		peer.Close()
+		c.Close()
+		remaining := 0
+		agent.Connections.Range(func(_, _ any) bool { remaining++; return true })
+		if remaining != 0 {
+			t.Fatalf("remaining agent streams %d", remaining)
+		}
+		listener, err := net.Listen("tcp", bound.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		listener.Close()
+	}
+}
