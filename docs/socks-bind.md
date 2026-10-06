@@ -58,3 +58,7 @@ LIVE_BIND=1 AZNET_LIVE_CONFIG=/absolute/path/to/config.json tests/udp-topology/r
 Use `azqueue` or `aztable` for the other drivers. The BIND cases run before the
 existing UDP matrix. This is native runtime validation; WASM-over-Azure and
 public/NAT inbound reachability are not implied.
+
+For an independent application example, [active FTP testing](active-ftp-bind.md)
+uses tnftp, Dante socksify and vsftpd to exercise upload, download and directory
+listing through actual BIND requests. SFTP normally uses CONNECT instead.
