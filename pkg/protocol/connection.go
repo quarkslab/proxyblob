@@ -37,6 +37,7 @@ type Connection struct {
 	peerWindow, sent, peerConsumed uint64
 	deliveryMu                     sync.Mutex
 	deliveryEnded                  bool
+	receiveDone                    chan struct{}
 	deliveryErr                    error
 	stop                           <-chan struct{}
 	CreatedAt                      time.Time
@@ -48,7 +49,7 @@ func NewConnection(id uuid.UUID, stop <-chan struct{}) *Connection {
 	if stop == nil {
 		stop = neverStop
 	}
-	return &Connection{ID: id, Closed: make(chan struct{}), established: make(chan struct{}), changed: make(chan struct{}), creditWake: make(chan struct{}), stop: stop, CreatedAt: time.Now()}
+	return &Connection{ID: id, Closed: make(chan struct{}), receiveDone: make(chan struct{}), established: make(chan struct{}), changed: make(chan struct{}), creditWake: make(chan struct{}), stop: stop, CreatedAt: time.Now()}
 }
 
 func (c *Connection) ProtocolConn() *ProtocolConn { return c.protoConn.Load() }
@@ -148,13 +149,19 @@ func (c *Connection) Deliver(data []byte) bool {
 	return true
 }
 
-func (c *Connection) notifyReader()   { close(c.changed); c.changed = make(chan struct{}) }
+func (c *Connection) notifyReader() { close(c.changed); c.changed = make(chan struct{}) }
+
+// ReceiveDone signals peer EOF without consuming buffered bytes. Setup operations
+// can stop waiting for a peer when their client has gone away.
+func (c *Connection) ReceiveDone() <-chan struct{} { return c.receiveDone }
+
 func (c *Connection) FinishDelivery() { c.finishDelivery(io.EOF) }
 func (c *Connection) finishDelivery(err error) {
 	c.deliveryMu.Lock()
 	defer c.deliveryMu.Unlock()
 	if !c.deliveryEnded {
 		c.deliveryEnded = true
+		close(c.receiveDone)
 		c.deliveryErr = err
 		c.notifyReader()
 	}

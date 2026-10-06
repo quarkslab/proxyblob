@@ -9,8 +9,8 @@ there is no direct client-to-agent UDP path and no aznet Driver change.
 Deploy proxy and agent together: the tunnel handshake now requires **version 3**.
 Versions 1, 2, empty legacy handshakes, and future unsupported versions fail with
 an explicit negotiation error. TCP DATA, CREDIT and directional EOF semantics
-remain unchanged. This change completes the UDP path; BIND, other negotiation
-corrections, and additional authentication are separate work. It does not claim
+remain unchanged. Native BIND and negotiation corrections are described in [SOCKS BIND](socks-bind.md).
+Additional authentication remains outside this effort. It does not claim
 full SOCKS5 conformance.
 
 ## Wire records and ownership
