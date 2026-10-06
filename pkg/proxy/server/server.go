@@ -290,6 +290,6 @@ func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Con
 	}
 	s.cleanupConnection(connID, clientConn, proxyConn)
 	if err != nil {
-		log.Debug().Err(err).Str("conn_id", connID.String()).Msg("Stream forwarding failed")
+		s.ReportError(connID, protocol.StreamErrorCode(err))
 	}
 }

@@ -89,3 +89,30 @@ func TestRejectedVersionIsDecodedOnlyAtProxy(t *testing.T) {
 		t.Fatalf("missing proxy description: %s", &output)
 	}
 }
+
+func TestStreamDiagnosticSeverity(t *testing.T) {
+	for _, tc := range []struct {
+		code  byte
+		level string
+	}{
+		{protocol.ErrStreamCanceled, "debug"},
+		{protocol.ErrConnectionClosed, "warn"},
+		{protocol.ErrTransportError, "warn"},
+		{protocol.ErrTransportTimeout, "warn"},
+		{protocol.ErrStreamReset, "warn"},
+		{protocol.ErrStreamBrokenPipe, "warn"},
+	} {
+		var output bytes.Buffer
+		protocolErrorReporter(zerolog.New(&output))(uuid.New(), tc.code)
+		var record struct {
+			Level string `json:"level"`
+			Code  byte   `json:"code"`
+		}
+		if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Level != tc.level || record.Code != tc.code {
+			t.Fatalf("unexpected diagnostic: %+v", record)
+		}
+	}
+}

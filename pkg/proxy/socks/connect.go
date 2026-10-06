@@ -71,8 +71,9 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 func (h *SocksHandler) handleTCPDataTransfer(conn *protocol.Connection, tcpConn net.Conn) byte {
 	err := protocol.Forward(tcpConn, conn.ProtocolConn())
 	if err != nil {
-		h.SendClose(conn.ID, protocol.ErrConnectionClosed)
-		return protocol.ErrConnectionClosed
+		code := protocol.StreamErrorCode(err)
+		h.SendClose(conn.ID, code)
+		return code
 	}
 	h.SendClose(conn.ID, protocol.ErrNone)
 	return protocol.ErrNone

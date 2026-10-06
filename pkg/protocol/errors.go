@@ -4,9 +4,11 @@ package protocol
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"strconv"
+	"syscall"
 )
 
 // Protocol error codes for agent-server communication.
@@ -139,4 +141,50 @@ func ErrorCode(err error) byte {
 		return ErrTransportTimeout
 	}
 	return ErrTransportError
+}
+
+// ErrStreamCanceled identifies an explicit local shutdown, not a failed transfer.
+// Older proxies retain this unknown numeric code as a warning.
+const (
+	ErrStreamCanceled   byte = 59
+	ErrStreamReset      byte = 60
+	ErrStreamBrokenPipe byte = 61
+)
+
+// StreamErrorCode classifies every cause in a joined forwarding error. An
+// expected close must never hide a reset, timeout, or another real failure.
+func StreamErrorCode(err error) byte {
+	if err == nil {
+		return ErrNone
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		code := ErrNone
+		for _, cause := range joined.Unwrap() {
+			next := StreamErrorCode(cause)
+			if next != ErrNone && next != ErrStreamCanceled {
+				return next
+			}
+			if next != ErrNone {
+				code = next
+			}
+		}
+		return code
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return StreamErrorCode(wrapped.Unwrap())
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, context.Canceled) {
+		return ErrStreamCanceled
+	}
+	if errors.Is(err, syscall.ECONNRESET) {
+		return ErrStreamReset
+	}
+	if errors.Is(err, syscall.EPIPE) {
+		return ErrStreamBrokenPipe
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return ErrTransportTimeout
+	}
+	return ErrorCode(err)
 }
