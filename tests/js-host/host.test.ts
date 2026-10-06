@@ -3,6 +3,7 @@ import { test, expect } from "bun:test";
 import {
   TCPDial,
   UDPListen,
+  UDPResolve,
   stats,
   CHUNK_BYTES,
   HOST_READ_BYTES,
@@ -175,4 +176,20 @@ test("real UDP bind failure closes the created socket", async () => {
     handle?.dispose();
     await new Promise<void>((resolve) => occupied.close(resolve));
   }
+});
+
+
+test("UDP DNS resolves and pending disposal detaches callbacks", async () => {
+  let calls = 0;
+  const pending = UDPResolve("localhost", () => calls++, () => calls++);
+  pending.dispose(); pending.dispose();
+  await Bun.sleep(10);
+  expect(calls).toBe(0);
+  await new Promise<void>((resolve, reject) => {
+    const handle = UDPResolve("localhost", (ip) => {
+      expect(ip === "127.0.0.1" || ip === "::1").toBe(true);
+      handle.dispose(); resolve();
+    }, (message) => { handle.dispose(); reject(new Error(message)); });
+  });
+  await drained();
 });

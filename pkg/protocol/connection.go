@@ -20,6 +20,7 @@ type Connection struct {
 	established                    chan struct{}
 	mu                             sync.Mutex
 	destination                    net.Conn
+	datagrams                      *Datagrams
 	disposed                       bool
 	Closed                         chan struct{}
 	closeOnce                      sync.Once
@@ -87,9 +88,13 @@ func (c *Connection) Close() byte {
 		c.mu.Lock()
 		c.disposed = true
 		dst := c.destination
+		dgrams := c.datagrams
 		pc := c.protoConn.Load()
 		close(c.Closed)
 		c.mu.Unlock()
+		if dgrams != nil {
+			dgrams.clear()
+		}
 		if pc != nil {
 			pc.Shutdown()
 		}

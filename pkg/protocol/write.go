@@ -35,12 +35,30 @@ func (h *BaseHandler) signalWriter() {
 }
 
 func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan struct{}, confirmed bool, progress ...*atomic.Int64) (chan error, error) {
-	if len(data) > h.flow.DataFrame && cmd == CmdData || len(data) > 12 && cmd != CmdData {
+	limit := 12
+	switch cmd {
+	case CmdData:
+		limit = h.flow.DataFrame
+	case CmdDatagram:
+		limit = MaxDatagramSize
+	case CmdUDPAssociate:
+		limit = 259
+	case CmdUDPReady:
+		limit = 20
+	}
+	if len(data) > limit {
+		return nil, ErrMalformedPacket
+	}
+
+	if len(data)+HeaderSize > h.flow.BatchBytes && cmd != CmdDatagram {
 		return nil, ErrMalformedPacket
 	}
 	h.queueMu.Lock()
 	defer h.queueMu.Unlock()
-	for cmd == CmdData {
+	for cmd == CmdData || cmd == CmdDatagram {
+		if cmd == CmdDatagram && (len(data) > h.flow.StreamWindow || len(data)+HeaderSize > h.flow.BatchBytes) {
+			return nil, ErrDatagramDropped
+		}
 		pending := h.pendingData[id]
 		if len(data) > h.flow.StreamWindow {
 			return nil, ErrMalformedPacket
@@ -49,6 +67,9 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 			h.dataBytes+len(data) <= h.flow.TunnelWindow &&
 			pending.records < maxPendingDataRecordsPerStream && h.dataRecords < maxPendingDataRecordsPerStream*h.flow.MaxStreams {
 			break
+		}
+		if cmd == CmdDatagram {
+			return nil, ErrDatagramDropped
 		}
 		space := h.dataSpace
 		h.queueMu.Unlock()
@@ -82,7 +103,7 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 	if confirmed {
 		req.done = make(chan error, 1)
 	}
-	if cmd == CmdData {
+	if cmd == CmdData || cmd == CmdDatagram {
 		// Charge queued AND in-flight records until the transport write ends.
 		req.isData = true
 		req.payload = len(data)

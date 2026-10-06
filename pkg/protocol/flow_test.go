@@ -300,7 +300,7 @@ func TestFlowCreditValidation(t *testing.T) {
 }
 
 func TestFlowUnsupportedVersions(t *testing.T) {
-	for _, data := range [][]byte{nil, {0, 0, 0, 1}, {0, 0, 0, 3}} {
+	for _, data := range [][]byte{nil, {0, 0, 0, 1}, {0, 0, 0, 2}, {0, 0, 0, 4}} {
 		synctest.Test(t, func(t *testing.T) {
 			a, b := flowPair(t, tinyFlow())
 			a.sendPacket(CmdNew, uuid.New(), data)

@@ -1,158 +1,153 @@
 package proxy
 
 import (
-	"encoding/binary"
 	"errors"
+	"io"
 	"net"
-	"os"
+	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"proxyblob/pkg/protocol"
 )
 
-// handleUDPAssociate processes the SOCKS5 UDP ASSOCIATE command.
-// It creates a single UDP relay socket, tells the client which port to use,
-// then dispatches all relay logic to handleUDPPackets.
-func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection) byte {
-	setupCtx, cancelSetup := socketSetupContext(h.Ctx, conn.Closed)
-	udpConn, err := listenUDPContext(setupCtx)
-	cancelSetup()
+// The proxy owns the client endpoint. The agent only owns target-facing UDP.
+func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []byte) byte {
+	if target, code := ParseAddress(request); code != protocol.ErrNone {
+		return h.failUDPAssociate(conn, code)
+	} else if _, _, err := net.SplitHostPort(target); err != nil {
+		return h.failUDPAssociate(conn, protocol.ErrAddressNotSupported)
+	}
+	d := conn.EnableDatagrams()
+	if d == nil {
+		return protocol.ErrInvalidState
+	}
+	// A control FIN ends this association, including while setup is in flight.
+	go func() { io.Copy(io.Discard, conn.ProtocolConn()); h.SendClose(conn.ID, protocol.ErrNone) }()
+	setupCtx, cancel := socketSetupContext(h.Ctx, conn.Closed)
+	socket, err := listenUDPContext(setupCtx)
+	cancel()
 	if err != nil {
-		h.SendError(conn, protocol.ErrNetworkUnreachable)
-		return protocol.ErrNetworkUnreachable
+		return h.failUDPAssociate(conn, protocol.ErrNetworkUnreachable)
 	}
+	defer socket.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-done:
+		case <-conn.Closed:
+		case <-h.Ctx.Done():
+		}
+		socket.Close()
+	}()
 
-	port := udpConn.LocalPort()
-
-	// Send success response: VER REP RSV ATYP BND.ADDR(4) BND.PORT(2)
-	response := []byte{
-		Version5, Succeeded, 0, IPv4,
-		0, 0, 0, 0,
-		byte(port >> 8), byte(port & 0xff),
+	address, err := d.Request(request)
+	if err != nil {
+		return protocol.ErrConnectionClosed
 	}
-	if errCode := h.SendData(conn.ID, response); errCode != protocol.ErrNone {
-		udpConn.Close()
+	if h.SendData(conn.ID, append([]byte{Version5, address[0], 0}, address[1:]...)) != protocol.ErrNone {
 		return protocol.ErrPacketSendFailed
 	}
-
-	go h.handleUDPPackets(conn, udpConn)
-
-	// Hold the control connection open; close the socket when context dies.
-	select {
-	case <-conn.Closed:
-	case <-h.Ctx.Done():
-		udpConn.Close()
+	if address[0] != Succeeded {
+		h.SendClose(conn.ID, protocol.ErrNone)
+		return protocol.ErrNone
 	}
+	err = h.relayAgentUDP(conn, d, socket)
+	if err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Warn().Err(err).Msg("Agent UDP relay stopped")
+	}
+	h.SendClose(conn.ID, protocol.ErrNone)
 	return protocol.ErrNone
 }
 
-// handleUDPPackets relays UDP datagrams between the SOCKS client and internet targets.
-//
-// A single socket handles both directions:
-//   - Packets from clientAddr → strip SOCKS5 header → forward to target
-//   - Packets from a known target → wrap in SOCKS5 header → forward to clientAddr
-func (h *SocksHandler) handleUDPPackets(conn *protocol.Connection, udpConn UDPRelayConn) {
-	defer udpConn.Close()
-
-	buf := make([]byte, 16*1024)
-	var clientAddr *net.UDPAddr
-
-	type targetInfo struct {
-		addr       *net.UDPAddr
-		lastActive time.Time
-	}
-	targets := make(map[string]*targetInfo)
-
-	cleanup := time.NewTicker(30 * time.Second)
-	defer cleanup.Stop()
-
-	for {
-		// Check for shutdown before blocking on I/O.
-		select {
-		case <-h.Ctx.Done():
-			return
-		case <-conn.Closed:
-			return
-		case <-cleanup.C:
-			now := time.Now()
-			for k, t := range targets {
-				if now.Sub(t.lastActive) > time.Minute {
-					delete(targets, k)
-				}
-			}
-		default:
-		}
-
-		udpConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, addr, err := udpConn.ReadFrom(buf)
-		if err != nil {
-			if isUDPTimeout(err) {
-				continue
-			}
-			if errors.Is(err, net.ErrClosed) {
+func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagrams, socket UDPRelayConn) (result error) {
+	// Keys are resolved IP:port pairs, never unbounded client-provided domain
+	// strings. Evict idle entries on admission; drop new destinations at capacity.
+	var mu sync.Mutex
+	targets := make(map[string]time.Time)
+	finished := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, from, err := socket.ReadFrom(buf)
+			if err != nil {
+				finished <- err
+				c.Close()
 				return
 			}
-			h.SendClose(conn.ID, protocol.ErrNetworkUnreachable)
-			return
+			mu.Lock()
+			last, known := targets[from.String()]
+			if known && time.Since(last) <= time.Minute {
+				targets[from.String()] = time.Now()
+			} else {
+				known = false
+			}
+			mu.Unlock()
+			if !known {
+				continue
+			}
+			packet := append([]byte{0, 0, 0}, UDPAddress(from)...)
+			packet = append(packet, buf[:n]...)
+			if len(packet) > protocol.MaxDatagramSize {
+				continue
+			} // complete SOCKS packet must fit the client UDP payload
+			if err = d.Send(packet); err != nil && !errors.Is(err, protocol.ErrDatagramDropped) {
+				finished <- err
+				c.Close()
+				return
+			}
 		}
-
-		if n == 0 {
+	}()
+	defer func() {
+		socket.Close()
+		if readErr := <-finished; readErr != nil && !errors.Is(readErr, net.ErrClosed) {
+			result = readErr
+		}
+	}()
+	for {
+		packet, err := d.Receive()
+		if err != nil {
+			return err
+		}
+		target, header, code := ExtractUDPHeader(packet)
+		if code != protocol.ErrNone {
 			continue
 		}
-
-		if clientAddr == nil {
-			// First valid SOCKS5 UDP datagram (RSV=0x0000, FRAG=0) sets the client.
-			if n > 3 && buf[0] == 0 && buf[1] == 0 && buf[2] == 0 {
-				clientAddr = addr
-			} else {
-				continue
+		ctx, cancel := socketSetupContext(h.Ctx, c.Closed)
+		addr, err := resolveUDPContext(ctx, target)
+		cancel()
+		if err != nil {
+			log.Debug().Err(err).Msg("UDP destination resolution failed")
+			continue
+		}
+		mu.Lock()
+		now := time.Now()
+		for key, last := range targets {
+			if now.Sub(last) > time.Minute {
+				delete(targets, key)
 			}
 		}
-
-		if addr.IP.Equal(clientAddr.IP) && addr.Port == clientAddr.Port {
-			// Client → target
-			if n <= 3 {
+		_, exists := targets[addr.String()]
+		if !exists && len(targets) >= h.udpDestinations {
+			mu.Unlock()
+			continue
+		}
+		targets[addr.String()] = now
+		mu.Unlock()
+		if err = socket.WriteTo(packet[header:], addr); err != nil {
+			if errors.Is(err, io.ErrShortWrite) {
 				continue
-			}
-			targetAddr, headerLen, errCode := ExtractUDPHeader(buf[:n])
-			if errCode != protocol.ErrNone {
-				continue
-			}
-			targetUDPAddr, err := net.ResolveUDPAddr("udp", targetAddr)
-			if err != nil {
-				continue
-			}
-			targets[targetAddr] = &targetInfo{addr: targetUDPAddr, lastActive: time.Now()}
-			udpConn.WriteTo(buf[headerLen:n], targetUDPAddr)
-		} else {
-			// Target → client: find the matching target entry and wrap with SOCKS5 header.
-			for _, t := range targets {
-				if !t.addr.IP.Equal(addr.IP) || t.addr.Port != addr.Port {
-					continue
-				}
-				t.lastActive = time.Now()
-
-				var header []byte
-				if ip4 := addr.IP.To4(); ip4 != nil {
-					header = append([]byte{0, 0, 0, IPv4}, ip4...)
-				} else {
-					header = append([]byte{0, 0, 0, IPv6}, addr.IP.To16()...)
-				}
-				var portBuf [2]byte
-				binary.BigEndian.PutUint16(portBuf[:], uint16(addr.Port))
-				header = append(header, portBuf[:]...)
-
-				udpConn.WriteTo(append(header, buf[:n]...), clientAddr)
-				break
-			}
+			} // host refused whole datagram at its finite send limit
+			return err
 		}
 	}
 }
 
-// isUDPTimeout reports whether err is a read-deadline / timeout error.
-func isUDPTimeout(err error) bool {
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return true
-	}
-	return errors.Is(err, os.ErrDeadlineExceeded)
+// A failure reply is application data: close gracefully so the proxy drains it
+// before closing TCP. A nonzero tunnel CLOSE would discard that accepted reply.
+func (h *SocksHandler) failUDPAssociate(c *protocol.Connection, code byte) byte {
+	h.SendError(c, code)
+	h.SendClose(c.ID, protocol.ErrNone)
+	return protocol.ErrNone
 }

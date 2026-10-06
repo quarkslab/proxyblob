@@ -138,7 +138,11 @@ func (c *jsUDPConn) ReadFrom(b []byte) (int, *net.UDPAddr, error) {
 			c.packets = c.packets[1:]
 			c.queuedBytes -= len(pkt.data)
 			c.mu.Unlock()
-			return copy(b, pkt.data), pkt.addr, nil
+			n := copy(b, pkt.data)
+			if n < len(pkt.data) {
+				return n, pkt.addr, io.ErrShortBuffer
+			}
+			return n, pkt.addr, nil
 		}
 		changed, dl := c.changed, c.dl
 		c.mu.Unlock()
