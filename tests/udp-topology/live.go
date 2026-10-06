@@ -144,7 +144,6 @@ func liveRun(role string) {
 			}
 			if raw, err := os.ReadFile("/signals/close-tunnel"); err == nil {
 				liveClose("close active Azure tunnel", conn.Close())
-				server.Stop()
 				assertRelayClosed(string(raw))
 				return
 			}
