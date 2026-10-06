@@ -129,7 +129,9 @@ change.
 uses real aznet `Listen`/`Dial`, bootstrap SAS, session credentials and Azure
 storage for the tunnel. Repeat with `azqueue` and `aztable`. The configuration
 must contain an HTTPS Azure account-key listener for the selected driver. The
-script builds the committed module dependency with `GOWORK=off -mod=readonly`.
+script defaults to the committed module dependency with `GOWORK=off -mod=readonly`.
+For source integration, set `PROXYBLOB_LIVE_GOWORK=/absolute/go.work` explicitly;
+record its selected revision separately from published-dependency results.
 It creates only random, invocation-prefixed bootstrap/session resources and
 removes them on exit. No existing listener namespace is used. Run only against
 an account where these temporary resource operations are authorized.

@@ -98,8 +98,8 @@ The last command builds the **actual Go test binary for js/wasm**, dynamically
 loads `$(go env GOROOT)/lib/wasm/wasm_exec.js` from that same selected toolchain,
 and executes it under Bun. It never vendors a shim or assumes a fixed GOROOT.
 For local source integration, repeat with an explicit `GOWORK=/absolute/go.work`
-containing this checkout and the chosen aznet source. The committed aznet pin is
-unchanged; standalone builds use `-mod=readonly`.
+containing this checkout and the chosen aznet source. Standalone builds use the committed published aznet pin with `-mod=readonly`;
+see [release validation](release-validation.md) for the tested revision.
 
 The Go tests cover setup success/error/timeout, close-before-connect, late
 completion suppression, callback release, teardown, receive violations, bounded
