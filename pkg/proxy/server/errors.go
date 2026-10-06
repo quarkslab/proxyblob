@@ -83,8 +83,7 @@ func protocolErrorReporter(logger zerolog.Logger) func(uuid.UUID, byte) {
 			return
 		}
 		event := logger.Warn()
-		if code == protocol.ErrStreamCanceled || code == protocol.ErrStreamReset ||
-			code == protocol.ErrStreamBrokenPipe || code == protocol.ErrStreamNotConnected {
+		if protocol.IsStreamClosure(code) {
 			event = logger.Debug()
 		}
 		event.Uint8("code", code).Str("conn_id", id.String()).Msg(ErrorDescription(code))

@@ -86,3 +86,19 @@ func TestForwardPublishesOriginalFailureBeforeClosing(t *testing.T) {
 		})
 	}
 }
+
+func TestJoinedClosuresCannotHideWarnings(t *testing.T) {
+	for _, closure := range []error{net.ErrClosed, syscall.EPIPE, syscall.ECONNRESET, syscall.ENOTCONN} {
+		for _, failure := range []error{os.ErrDeadlineExceeded, ErrFlowControl, errors.New("unknown failure")} {
+			want := StreamErrorCode(failure)
+			for _, joined := range []error{
+				errors.Join(closure, failure), errors.Join(failure, closure),
+				errors.Join(closure, fmt.Errorf("wrapped: %w", errors.Join(net.ErrClosed, failure))),
+			} {
+				if got := StreamErrorCode(joined); got != want {
+					t.Fatalf("closure %v masked %v: got %d want %d", closure, failure, got, want)
+				}
+			}
+		}
+	}
+}

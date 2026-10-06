@@ -162,10 +162,10 @@ func StreamErrorCode(err error) byte {
 		code := ErrNone
 		for _, cause := range joined.Unwrap() {
 			next := StreamErrorCode(cause)
-			if next != ErrNone && next != ErrStreamCanceled {
+			if next != ErrNone && !IsStreamClosure(next) {
 				return next
 			}
-			if next != ErrNone {
+			if next != ErrNone && (code == ErrNone || code == ErrStreamCanceled) {
 				code = next
 			}
 		}
@@ -191,4 +191,10 @@ func StreamErrorCode(err error) byte {
 		return ErrTransportTimeout
 	}
 	return ErrorCode(err)
+}
+
+// IsStreamClosure identifies socket lifecycle diagnostics normally kept at debug.
+// These must not override a timeout, protocol error, or unknown failure.
+func IsStreamClosure(code byte) bool {
+	return code == ErrStreamCanceled || code == ErrStreamReset || code == ErrStreamBrokenPipe || code == ErrStreamNotConnected
 }
