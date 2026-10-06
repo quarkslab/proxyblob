@@ -1,5 +1,5 @@
 // This harness runs in three isolated network namespaces. It exercises the
-// production proxy/agent handlers over a TCP tunnel; it does not emulate Azure.
+// production proxy/agent handlers over TCP, or real Azure with run-live.sh.
 package main
 
 import (
@@ -23,6 +23,10 @@ func must(err error) {
 	}
 }
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "live" {
+		liveRun(os.Args[2])
+		return
+	}
 	switch os.Args[1] {
 	case "proxy":
 		listener, err := net.Listen("tcp", ":9000")
@@ -80,7 +84,7 @@ func echo(network, address string) {
 func associate() (net.Conn, *net.UDPAddr) {
 	var control net.Conn
 	var err error
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1800; i++ {
 		control, err = net.Dial("tcp", "proxy-front:1080")
 		if err == nil {
 			break
@@ -88,7 +92,7 @@ func associate() (net.Conn, *net.UDPAddr) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	must(err)
-	control.SetDeadline(time.Now().Add(10 * time.Second))
+	control.SetDeadline(time.Now().Add(60 * time.Second))
 	_, err = control.Write([]byte{5, 1, 0})
 	must(err)
 	auth := make([]byte, 2)
@@ -127,8 +131,28 @@ func client() {
 	}
 
 	fmt.Println("PASS direct client-to-agent UDP is blocked across isolated networks")
+	if os.Getenv("LIVE_TEST") == "1" {
+		slow, relay := associate()
+		defer slow.Close()
+		unread, err := net.ListenUDP("udp4", &net.UDPAddr{})
+		must(err)
+		defer unread.Close()
+		packet := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, 74, 57}, make([]byte, 32768)...)
+		unread.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		for i := 0; i < 100; i++ {
+			_, err := unread.WriteToUDP(packet, relay)
+			must(err)
+		}
+		fmt.Println("PRESSURE sent=100 payload=32768 unread_association=true; following healthy associations must progress")
+	}
+	controls := make([]net.Conn, 3)
+	relays := make([]*net.UDPAddr, 3)
+	for i := range controls {
+		controls[i], relays[i] = associate()
+		defer controls[i].Close()
+	}
 	for clientID := 0; clientID < 3; clientID++ {
-		control, relay := associate()
+		control, relay := controls[clientID], relays[clientID]
 		socket, err := net.ListenUDP("udp4", &net.UDPAddr{})
 		must(err)
 		for _, kind := range []string{"ipv4", "ipv6", "domain"} {
@@ -155,7 +179,8 @@ func client() {
 				}
 				packet := append([]byte{0, 0, 0}, address...)
 				packet = append(packet, payload...)
-				socket.SetDeadline(time.Now().Add(5 * time.Second))
+				start := time.Now()
+				socket.SetDeadline(time.Now().Add(30 * time.Second))
 				_, err = socket.WriteToUDP(packet, relay)
 				must(err)
 				buf := make([]byte, protocol.MaxDatagramSize)
@@ -170,26 +195,69 @@ func client() {
 				if !addr.IP.IsLoopback() || addr.Port != port {
 					panic("reply source not destination")
 				}
+				fmt.Printf("ROUNDTRIP client=%d destination=%s payload=%d elapsed_ms=%d\n", clientID, kind, size, time.Since(start).Milliseconds())
 			}
 			fmt.Printf("PASS client=%d destination=%s through maximum complete SOCKS datagram\n", clientID, kind)
 		}
-		// Every header must be validated, even after a valid source was learned.
-		malformed := []byte{0, 0, 1, 1, 127, 0, 0, 1, byte(19001 >> 8), byte(19001 & 255), 99}
-		socket.WriteToUDP(malformed, relay)
-		socket.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		if _, _, err = socket.ReadFromUDP(make([]byte, 100)); err == nil {
-			panic("fragment relayed")
+		// Every header is validated after the valid client source was pinned.
+		valid := []byte{0, 0, 0, 1, 127, 0, 0, 1, byte(19001 >> 8), byte(19001 & 255), 99}
+		reject := func(packet []byte, sender *net.UDPConn) {
+			_, err := sender.WriteToUDP(packet, relay)
+			must(err)
+			sender.SetReadDeadline(time.Now().Add(time.Second))
+			if _, _, err := sender.ReadFromUDP(make([]byte, 100)); err == nil {
+				panic("rejected datagram received a reply")
+			}
 		}
+		malformed := append([]byte(nil), valid...)
+		malformed[len(malformed)-1] = 98
+		malformed[2] = 1
+		reject(malformed, socket)
+		malformed[2] = 0
+		malformed[0] = 1
+		reject(malformed, socket)
+		reject([]byte{0, 0, 0, 4, 0}, socket)
+		spoof, err := net.ListenUDP("udp4", &net.UDPAddr{})
+		must(err)
+		spoofPacket := append([]byte(nil), valid...)
+		spoofPacket[len(spoofPacket)-1] = 97
+		reject(spoofPacket, spoof)
+		spoof.Close()
+		// A good response following invalid packets proves the path stayed healthy.
+		socket.SetDeadline(time.Now().Add(30 * time.Second))
+		_, err = socket.WriteToUDP(valid, relay)
+		must(err)
+		healthy := make([]byte, 100)
+		n, _, err := socket.ReadFromUDP(healthy)
+		must(err)
+		if !bytes.Equal(healthy[:n], valid) {
+			panic("healthy probe mismatch or invalid packet arrived late")
+		}
+		fmt.Printf("PASS client=%d rejects FRAG/RSV/truncated headers and alternate source port; healthy traffic recovers\n", clientID)
 		control.Close()
-		time.Sleep(100 * time.Millisecond)
-		valid := append([]byte(nil), malformed...)
-		valid[2] = 0
-		socket.WriteToUDP(valid, relay)
-		socket.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		if _, _, err = socket.ReadFromUDP(make([]byte, 100)); err == nil {
-			panic("association survived TCP close")
-		}
+		time.Sleep(time.Second)
+		reject(valid, socket)
+		fmt.Printf("PASS client=%d relay stops after control close\n", clientID)
 		socket.Close()
+	}
+	if os.Getenv("LIVE_TEST") == "1" {
+		control, relay := associate()
+		defer control.Close()
+		socket, err := net.ListenUDP("udp4", &net.UDPAddr{})
+		must(err)
+		defer socket.Close()
+		must(os.WriteFile("/signals/close-tunnel", []byte("close"), 0600))
+		control.SetReadDeadline(time.Now().Add(30 * time.Second))
+		if _, err := control.Read(make([]byte, 1)); err != io.EOF {
+			panic("control did not close on tunnel loss")
+		}
+		socket.SetDeadline(time.Now().Add(time.Second))
+		_, err = socket.WriteToUDP([]byte{0, 0, 0, 1, 127, 0, 0, 1, 74, 57, 99}, relay)
+		must(err)
+		if _, _, err := socket.ReadFromUDP(make([]byte, 100)); err == nil {
+			panic("relay survived tunnel loss")
+		}
+		fmt.Println("PASS open association control/UDP relay close on Azure tunnel loss")
 	}
 	fmt.Println("PASS topology UDP round trips, reply addressing, malformed input, maximum sizes, multiple clients/destinations and TCP teardown")
 }
