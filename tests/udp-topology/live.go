@@ -51,7 +51,7 @@ func liveClose(step string, err error) {
 		liveClose(step, wrapped.Unwrap())
 		return
 	}
-	if err == context.Canceled || err == os.ErrDeadlineExceeded || err == net.ErrClosed {
+	if err == context.Canceled || err == context.DeadlineExceeded || err == os.ErrDeadlineExceeded || err == net.ErrClosed {
 		fmt.Printf("CLOSE step=%s expected_abort_type=%T\n", step, err)
 		return
 	}
