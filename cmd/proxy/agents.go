@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/atsika/aznet"
-	"github.com/google/uuid"
-	"github.com/rs/zerolog/log"
 	"io"
 	"net"
 	"proxyblob/pkg/protocol"
@@ -14,7 +11,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/atsika/aznet"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
+
+var connectedAgents sync.Map // connected agents: map[connID]*AgentConnection
 
 // AgentConnection tracks a connected agent.
 type AgentConnection struct {

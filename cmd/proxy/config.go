@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/atsika/aznet"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/atsika/aznet"
 )
+
+var config *Config // app config
 
 // ListenerConfig holds Azure Storage credentials for a single listener.
 type ListenerConfig struct {

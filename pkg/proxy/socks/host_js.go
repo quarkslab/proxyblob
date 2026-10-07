@@ -10,7 +10,7 @@ import (
 )
 
 // Version 2 requires immediate handles, synchronous callback detachment on
-// dispose, and pull-based TCP receive. See docs/js-socket-host.md.
+// dispose, and pull-based TCP receive. See the reference host in examples/bun/host.ts.
 func requireJSHost(name string) error {
 	v := js.Global().Get("ProxyBlobSocketHostVersion")
 	if v.Type() != js.TypeNumber || v.Float() != 2 || js.Global().Get(name).Type() != js.TypeFunction {

@@ -1,13 +1,14 @@
 # Changelog
 
-**Unreleased stabilization:**
+**ProxyBlob v2.3 - 07/10/2026:**
 
-- Reserved receive credit, bounded fair scheduling, and ordered half-close.
-- Native BIND and cloud-tunneled UDP with explicit overload limits.
-- Session authorization expiry display and bounded lifecycle cleanup.
-- Socket host v2 and actual Bun 1.4.2 WASM runtime validation.
-- Published aznet directional Blob I/O fix and measured performance baselines.
-- Coordinated wire-version-3 rollout required; see the [upgrade notes](docs/release-validation.md).
+- Improved stream delivery, throughput and connection cleanup.
+- Added native SOCKS5 BIND support and UDP forwarding through the storage tunnel.
+- Improved WASM socket handling and added a Bun agent example.
+- Added agent session-expiry display and configurable proxy log levels.
+- Improved listener feedback and connection error reporting.
+- Simplified setup and usage documentation, and reorganized code and tests.
+- Upgrade proxy and agent together; WASM users should also update the host. See the [upgrade notes](docs/usage.md#upgrading).
 
 **ProxyBlob v2.2 - 03/08/2026:**
 
