@@ -1,69 +1,71 @@
-# Everyday usage
+# Usage
 
-The **storage listener** accepts agent tunnels. The **agent's SOCKS endpoint** accepts local applications. Starting one does not start the other. Use [getting started](getting-started.md) for the complete sequence.
+A storage listener accepts agents. Each connected agent can provide a SOCKS endpoint on the proxy machine. See [setup](getting-started.md) for the initial connection.
 
-## Manage listeners and agents
+## Commands
 
 Run these inside the proxy prompt:
 
-| Command | Result |
+| Command | Action |
 |---|---|
-| `listener ls` | Show configured listeners and state |
-| `listener start NAME` | Start a configured listener and select it |
-| `listener select NAME` | Choose the listener used by `new` |
-| `new --listener NAME --duration 168h` | Generate credentials for joining that running listener |
-| `agent ls` | Show connected agents and issued session expiry |
-| `agent select FULL_ID` | Select the agent for subsequent commands |
+| `listener ls` | List configured listeners |
+| `listener start NAME` | Start and select a listener |
+| `listener select NAME` | Select the listener used by `new` |
+| `new --listener NAME --duration 168h` | Generate an agent connection string |
+| `agent ls` | List agents and their session expiry |
+| `agent select FULL_ID` | Select an agent |
 | `agent start --listen 127.0.0.1:1080` | Start its local SOCKS endpoint |
-| `agent stop` | Stop its SOCKS endpoint and active logical streams; retain the agent tunnel |
-| `agent rm` | Remove the selected agent and tunnel; clear selection |
-| `listener stop NAME` | Stop acceptance and close that listener's sessions |
+| `agent stop` | Stop local SOCKS service and its active connections |
+| `agent rm` | Disconnect and remove the selected agent |
+| `listener stop NAME` | Stop the listener and disconnect its agents |
 
-Use `help`, `help agent` and `help listener` for the installed binary's options. A listener already owned by incomplete cleanup cannot be restarted until the failure is reconciled. Check the reported SOCKS port instead of assuming 1080 when running multiple agents.
+Use `help`, `help agent` or `help listener` for available options. Check the reported SOCKS port when running several agents: if another ProxyBlob endpoint uses 1080, the next port may be selected.
 
-## Use applications through SOCKS
+## Applications
 
-For HTTP and HTTPS:
+Set your application's SOCKS5 proxy to `127.0.0.1:1080`, or the port reported at startup. Enable proxy-side hostname resolution if the application offers it.
 
 ```sh
-curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+curl --noproxy "" --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
-For an OpenSSH/SFTP client, use a ProxyCommand or a SOCKS-capable wrapper appropriate to your platform. SFTP normally uses TCP CONNECT, not BIND. The [active FTP example](active-ftp-bind.md) exercises real BIND with tnftp and Dante.
+SSH/SFTP needs a SOCKS-capable wrapper or a suitable `ProxyCommand`. UDP needs a client that supports SOCKS5 UDP ASSOCIATE; sending plain DNS requests to port 1080 will not work. Native agents also support BIND, provided the incoming peer can reach the agent's advertised address. WASM agents support TCP and UDP, but not BIND.
 
-A UDP application must support SOCKS5 UDP ASSOCIATE, keep its TCP control connection open, and send complete SOCKS UDP packets to the relay returned by the proxy. Plain `dig` against port 1080 does not perform that handshake. The [UDP/DNS harness](udp-tunnel.md#opt-in-live-azure-validation) provides a repeatable DNS-over-SOCKS test and documents its Azure opt-in.
+## Agent credentials
 
-BIND accepts an incoming peer at the agent. The first SOCKS reply reports the listening address; the second reports the accepted peer. Wait for the second reply before sending data. See [BIND behavior and reachability](socks-bind.md).
-
-## Authorization lifetimes
-
-| Setting | Controls | Default |
-|---|---|---|
-| `new --duration` | Bootstrap credential validity for joining | 168 hours |
-| Listener `session_duration` in config | Authorization issued to newly accepted sessions | 24 hours |
-| `agent ls` expiry | Actual issued session-token expiration in UTC | `unknown` if metadata is unavailable |
-
-Changing configuration does not renew an existing session. Bootstrap expiry alone does not terminate established sessions. There is no automatic credential renewal. Expiry is informational and not a liveness promise; credentials may fail for other reasons.
-
-## Build or deploy an agent
+Pass the generated connection string with `-c`, or set `CONNECTION_STRING` in the agent's environment. To embed it when building:
 
 ```sh
-make agent
+make agent TOKEN='<connection-string>'
+```
+
+The resulting binary contains the credential; keep it private.
+
+`new --duration` controls how long the string permits new connections (default: seven days). Listener configuration can set `"session_duration": "24h"`, the default authorization lifetime for a new session. `agent ls` shows the issued expiry. Changing these settings does not renew existing sessions; reconnect with fresh credentials when needed.
+
+## WASM agent with Bun
+
+Install Bun **1.4.2**, which the included host requires. From the repository root:
+
+```sh
 make wasm
+bun run examples/bun/agent.ts ./agent.wasm -c '<connection-string>'
 ```
 
-An optional `TOKEN='<generated-connection-string>'` embeds the bearer credential in the output binary. Use it only when that artifact and build command are protected. Otherwise provide `-c` or `CONNECTION_STRING` at runtime.
-
-Native proxy/agent builds need compatible tunnel protocol versions. For WASM, load `wasm_exec.js` from the exact Go toolchain used to build the binary and implement socket host v2. The [Bun 1.4.2 harness](js-socket-host.md) is a development/test host, not a ready-made production runner.
-
-## Limits and performance
-
-TCP senders pause when their reserved receive credit is exhausted. UDP queues instead drop complete packets under overload. Increasing windows can increase memory without improving a storage-latency bottleneck.
-
-Configure the finite environment limits described in [flow control](flow-control.md) and [UDP tunneling](udp-tunnel.md). [Measured performance](performance.md) records concurrency, heap samples, latency and request counts. Keep those measurements separate from your own region, account and workload.
-
-Before deployment, use the [release validation and rollout checklist](release-validation.md). In particular, native Azure tests do not prove production WASM-host behavior, and BIND does not arrange inbound firewall/NAT reachability.
+The [Bun example](../examples/bun/agent.ts) loads the agent and provides its TCP/UDP sockets. Keep Go installed and use the same toolchain for building and launching; the launcher loads that toolchain's `wasm_exec.js` automatically. `CONNECTION_STRING` also works here instead of `-c`.
 
 ## Logging
 
-The default `info` level shows normal operation without per-stream socket-closure messages. Use `./proxy -c config.json --log-level debug` to collect those diagnostics, or set `log_level` in the configuration. See [logging levels](logging.md) for precedence and severity.
+Normal operation uses `info`. For connection diagnostics:
+
+```sh
+./proxy -c config.json --log-level debug
+```
+
+You can also set `"log_level": "debug"` at the top level of `config.json`. The startup flag overrides configuration. Available levels are `trace`, `debug`, `info`, `warn` and `error`.
+
+Use `info` for interactive operation: `warn` and `error` also hide confirmations and generated connection strings. Common socket closures appear at `debug`; unexpected failures remain warnings.
+
+## Upgrading
+
+Stop active sessions and replace both proxy and agent with builds from the same release. Older tunnel versions are incompatible. If using WASM, update the Bun example files with the agent as well.

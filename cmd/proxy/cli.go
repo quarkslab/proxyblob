@@ -2,15 +2,24 @@ package main
 
 import (
 	"fmt"
-	"github.com/desertbit/grumble"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"net"
 	"os"
 	"path/filepath"
 	proxy "proxyblob/pkg/proxy/server"
 	"strconv"
+	"sync"
 	"time"
+
+	"github.com/desertbit/grumble"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+)
+
+var (
+	app              *grumble.App // grumble app instance for prompt updates
+	runningProxies   sync.Map     // active proxies: map[connID]*proxy.ProxyServer
+	selectedAgent    string       // currently selected agent ID
+	selectedListener string       // currently selected/default listener ID
 )
 
 // CLI banner with version.

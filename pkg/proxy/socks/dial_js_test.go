@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"proxyblob/pkg/protocol"
 	"strconv"
 	"syscall/js"
 	"testing"
@@ -500,5 +501,13 @@ func TestJSUDPReportsTruncationAndWriteRefusal(t *testing.T) {
 	state.Get("socket").Set("send", refuse)
 	if err = socket.WriteTo([]byte("drop"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9}); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("write refusal lost: %v", err)
+	}
+}
+
+func TestJSSetupFailureDoesNotCarryHostMessage(t *testing.T) {
+	testJSHost(t, "error") // host reports the text "setup failure"
+	conn, err := dialTCPContext(context.Background(), "127.0.0.1:9")
+	if conn != nil || !errors.Is(err, protocol.Error(protocol.ErrTransportError)) || err.Error() != "22" {
+		t.Fatalf("unsanitized host failure: %v", err)
 	}
 }

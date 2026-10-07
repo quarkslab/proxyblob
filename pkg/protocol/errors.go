@@ -4,11 +4,14 @@ package protocol
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"strconv"
 	"syscall"
+
+	"github.com/google/uuid"
 )
 
 // Protocol error codes for agent-server communication.
@@ -197,4 +200,17 @@ func StreamErrorCode(err error) byte {
 // These must not override a timeout, protocol error, or unknown failure.
 func IsStreamClosure(code byte) bool {
 	return code == ErrStreamCanceled || code == ErrStreamReset || code == ErrStreamBrokenPipe || code == ErrStreamNotConnected
+}
+
+// ReportError does not alter delivery, close, or the wire protocol. Descriptions
+// belong to the proxy callback; the default agent output contains only a code.
+func (h *BaseHandler) ReportError(id uuid.UUID, code byte) {
+	if code == ErrNone {
+		return
+	}
+	if h.OnError != nil {
+		h.OnError(id, code)
+		return
+	}
+	fmt.Fprintln(os.Stderr, code)
 }

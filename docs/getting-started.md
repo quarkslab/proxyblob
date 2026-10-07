@@ -1,10 +1,10 @@
-# Your first SOCKS connection
+# Setup
 
-This walkthrough starts one native proxy and one native agent. Begin with local Azurite to verify the workflow, or use your Azure account in step 2. Run shell commands from the repository root unless a step says otherwise. Commands inside the ProxyBlob prompt are marked separately.
+Run the proxy on your machine and the agent on the machine that should reach your destinations. Both need access to the same Azure Storage account. Run shell commands from the repository root; commands marked **Proxy prompt** go inside the interactive proxy.
 
-## 1. Build the binaries
+## Build
 
-Install Git, Make and Go with automatic toolchain selection enabled. The module declares Go 1.25; the recorded validation uses Go 1.26.4. The selected dependencies may require a newer toolchain than the module's declared minimum. Docker is needed only for the local emulator and container-based tests.
+Install Git, Make and Go with automatic toolchain selection enabled:
 
 ```sh
 git clone https://github.com/quarkslab/proxyblob.git
@@ -12,17 +12,40 @@ cd proxyblob
 make
 ```
 
-Expected files: `proxy`, `agent`, `agent.wasm`. The default build uses the committed published aznet dependency; no sibling checkout or workspace is required. To build only native binaries, use `make proxy agent`.
+This produces `proxy`, `agent` and `agent.wasm`. Use `make proxy agent` if you only need native binaries. Bun is needed only for the [WASM example](usage.md#wasm-agent-with-bun).
 
-Bun is not needed to run the native binaries. The optional WASM test host uses Bun 1.4.2; see [WASM setup](js-socket-host.md).
+## Configure storage
 
-## 2. Configure storage
+Create `config.json` on the proxy machine:
 
-Choose **one** of the following paths. The configuration stays on the proxy machine. The agent will receive a narrower generated connection string.
+```json
+{
+  "listeners": [{
+    "name": "demo",
+    "driver": "azblob",
+    "address": "https://YOUR_ACCOUNT.blob.core.windows.net",
+    "storage_account": "YOUR_ACCOUNT",
+    "storage_account_key": "YOUR_ACCOUNT_KEY"
+  }]
+}
+```
 
-### Local Azurite
+Replace the account name and key with your own values. Keep this file private. The agent receives a generated connection string and does not need the configuration file.
 
-In another terminal, start a disposable emulator and wait for the services to report ready:
+Choose the driver and matching endpoint:
+
+| Driver | Address |
+|---|---|
+| `azblob` | `https://YOUR_ACCOUNT.blob.core.windows.net` |
+| `azqueue` | `https://YOUR_ACCOUNT.queue.core.windows.net` |
+| `aztable` | `https://YOUR_ACCOUNT.table.core.windows.net` |
+
+The [example configuration](../example_config.json) shows how to define multiple listeners.
+
+<details>
+<summary>Try locally with Azurite instead</summary>
+
+Run the storage emulator in another terminal:
 
 ```sh
 docker run --rm --name proxyblob-demo \
@@ -31,14 +54,13 @@ docker run --rm --name proxyblob-demo \
   azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck
 ```
 
-Create `config.json` in the repository root with this **public emulator credential**:
+For the Blob example, use these values in `config.json`:
 
 ```json
 {
   "listeners": [{
     "name": "demo",
     "driver": "azblob",
-    "session_duration": "24h",
     "address": "http://127.0.0.1:10000/devstoreaccount1",
     "storage_account": "devstoreaccount1",
     "storage_account_key": "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
@@ -46,66 +68,36 @@ Create `config.json` in the repository root with this **public emulator credenti
 }
 ```
 
-Run both proxy and agent on this machine for this local walkthrough. A generated URL containing `127.0.0.1` refers to the agent's own machine, so it cannot reach your emulator from another host without a reachable endpoint.
+This is Azurite's public development key. Run both proxy and agent on this machine and wait for the emulator to be ready before continuing. Stop it afterward with `docker stop proxyblob-demo`.
 
-### Azure
+</details>
 
-Use an account with the chosen storage service and authorized HTTPS access from **both** proxy and agent. Standard general-purpose v2 supports Blob, Queue and Table. Premium Blob and anonymous public Blob access are not required. See Microsoft's [account types](https://learn.microsoft.com/en-us/azure/storage/common/storage-account-overview).
-
-Create `config.json`, replacing the three account placeholders:
-
-```json
-{
-  "listeners": [{
-    "name": "demo",
-    "driver": "azblob",
-    "session_duration": "24h",
-    "address": "https://YOUR_ACCOUNT.blob.core.windows.net",
-    "storage_account": "YOUR_ACCOUNT",
-    "storage_account_key": "YOUR_ACCOUNT_KEY"
-  }]
-}
-```
-
-Protect the file and keep it out of commits. `example_config.json` shows multiple listeners, but contains placeholders; it is not ready to run unchanged. To choose a different service, change both fields:
-
-| Driver | Azure address | Local address |
-|---|---|---|
-| `azblob` | `https://ACCOUNT.blob.core.windows.net` | `http://127.0.0.1:10000/devstoreaccount1` |
-| `azqueue` | `https://ACCOUNT.queue.core.windows.net` | `http://127.0.0.1:10001/devstoreaccount1` |
-| `aztable` | `https://ACCOUNT.table.core.windows.net` | `http://127.0.0.1:10002/devstoreaccount1` |
-
-## 3. Start the proxy and its storage listener
-
-In the proxy terminal:
+## Start the proxy
 
 ```sh
 ./proxy -c config.json
 ```
 
-At the interactive prompt, enter these commands without copying the prompt itself:
+**Proxy prompt:**
 
 ```text
-listener ls
 listener start demo
-new --duration 168h
+new
 ```
 
-`demo` is the configured listener name, not a network address. Starting it also selects it. `new` prints a `connection_string` value: copy only that complete value, without the log prefix. Treat it as a bearer secret. The duration controls when new agents can join; it is separate from the session's `24h` authorization.
+Copy the complete `connection_string` value from the output, without the log prefix. Keep it private.
 
-## 4. Start the native agent
+## Connect an agent
 
-In a second terminal, on the machine that should reach destination services:
+On the agent machine:
 
 ```sh
-./agent -c '<paste-the-generated-connection-string>'
+./agent -c '<connection-string>'
 ```
 
-The angle-bracket text is a placeholder; replace it completely. Alternatively, set `CONNECTION_STRING` through your environment and run `./agent`. The agent is normally quiet. Successful registration is shown by **Agent connected** in the proxy terminal.
+Replace the placeholder with the generated value. The proxy displays **Agent connected** when registration succeeds.
 
-## 5. Open the local SOCKS endpoint
-
-Back in the proxy prompt:
+**Proxy prompt:**
 
 ```text
 agent ls
@@ -113,23 +105,24 @@ agent select <full-agent-id>
 agent start --listen 127.0.0.1:1080
 ```
 
-Copy the full ID from the agent list or use completion. The prompt then shows its short ID. Check the **Proxy started** log for the actual port: another ProxyBlob SOCKS endpoint already using 1080 can cause selection of the next port.
+Use the full ID from `agent ls`, or tab completion. Check the **Proxy started** message for the port in use.
 
-## 6. Make a request
+## Use the SOCKS proxy
 
-In a third shell on the proxy machine, substituting the reported port if needed:
+On the proxy machine:
 
 ```sh
-curl --noproxy "" --fail --show-error --max-time 60 --socks5-hostname 127.0.0.1:1080 https://example.com/
+curl --noproxy "" --fail --show-error --max-time 60 \
+  --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
-Expected result: the Example Domain HTML page. `--socks5-hostname` sends the target hostname to the agent for resolution. This tests a TCP CONNECT conversation; it is not a UDP DNS test.
+You should receive the Example Domain page. Hostnames are resolved by the agent. You can also point a browser or another SOCKS5-capable application at `127.0.0.1:1080`.
 
-If the agent has no public Internet access, use an HTTP service it can reach. For a fully local demonstration, run `python3 -m http.server 8000 --bind 127.0.0.1` on the agent machine, then request `http://127.0.0.1:8000/` through the same SOCKS command. Here the target loopback address means the **agent** machine.
+For a destination such as `127.0.0.1:8000`, loopback refers to the agent's machine.
 
-## 7. Stop the demo
+## Stop
 
-After the request completes, use the proxy prompt:
+**Proxy prompt:**
 
 ```text
 agent stop
@@ -138,14 +131,6 @@ listener stop demo
 exit
 ```
 
-`agent stop` stops local SOCKS service while retaining the tunnel; `agent rm` removes the selected agent and its tunnel. The selection should clear. `listener stop demo` stops acceptance and closes its remaining sessions. A successful stop prints **Listener stopped** at the default log level. Inspect any cleanup failure instead of assuming pending traffic was delivered.
+`agent stop` stops local SOCKS service; `agent rm` disconnects the selected agent. A successful listener stop prints **Listener stopped**. Shared listener discovery resources remain in Azure; remove them only when that listener is retired and all its users have stopped.
 
-For the disposable local emulator:
-
-```sh
-docker stop proxyblob-demo
-```
-
-Listener shutdown intentionally retains shared bootstrap resources. The CLI does not delete that namespace; an administrator may remove its owned resources only after every user stops. Crashes and failed cleanup also require reconciliation. Do not delete an entire Azure account to clean up a single listener.
-
-Continue with [everyday usage](usage.md) or [troubleshooting](troubleshooting.md).
+See [usage](usage.md) for more commands or [troubleshooting](troubleshooting.md) if a step fails.

@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/url"
+	"sync"
+	"time"
+
 	"github.com/atsika/aznet"
 	"github.com/rs/zerolog/log"
-	"net/url"
-	"time"
 )
+
+var listeners sync.Map // active listeners: map[listenerID]*ListenerState
 
 // StartListener creates and starts an aznet listener for the given listener config.
 func StartListener(listenerID string) error {
