@@ -14,3 +14,15 @@ CLAUDE.md
 *.txt
 __blobstorage__/
 __azurite*.json
+
+# Local agent guidance, planning, and review artifacts
+/AGENTS.md
+/CONTEXT.md
+/CONTEXT-MAP.md
+/docs/agents/
+/docs/adr/
+/.scratch/
+/FIXPLAN.md
+/architecture-review-*.html
+/benchmark-report.html
+/verification-report.html
