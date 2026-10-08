@@ -117,6 +117,28 @@ func (c *ProtocolConn) closeWithCode(code byte) error {
 	return nil
 }
 
+// CloseWithCode closes the stream, sending code to the peer: diag.ErrNone is a
+// graceful close after which the peer still reads every byte already sent.
+func (c *ProtocolConn) CloseWithCode(code byte) error { return c.closeWithCode(code) }
+
+// ID identifies the stream within its session.
+func (c *ProtocolConn) ID() uuid.UUID { return c.id }
+
+// Done is closed once the stream is closed locally or by the peer.
+func (c *ProtocolConn) Done() <-chan struct{} { return c.owner.Closed }
+
+// ReceiveDone is closed at the peer's EOF, before buffered bytes are read.
+func (c *ProtocolConn) ReceiveDone() <-chan struct{} { return c.owner.ReceiveDone() }
+
+// AttachDestination ties dst's lifetime to the stream: closing the stream
+// closes dst. It reports false, having closed dst, if the stream is closed.
+func (c *ProtocolConn) AttachDestination(dst net.Conn) bool { return c.owner.AttachDestination(dst) }
+
+// EnableDatagrams turns on unreliable whole-message delivery for this stream;
+// both ends must enable it before either sends. It returns nil if already
+// enabled or closed.
+func (c *ProtocolConn) EnableDatagrams() *Datagrams { return c.owner.EnableDatagrams() }
+
 // LocalAddr implements net.Conn.LocalAddr (returns dummy address).
 func (c *ProtocolConn) LocalAddr() net.Addr {
 	return &protocolAddr{network: "protocol", address: c.id.String()}

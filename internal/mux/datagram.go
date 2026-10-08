@@ -149,7 +149,8 @@ func (h *BaseHandler) receiveDatagram(cmd byte, id uuid.UUID, b []byte) byte {
 			return diag.ErrInvalidState
 		}
 	}
-	if len(b) > MaxDatagramSize || len(b) < 8 {
+	// Content is the application's: mux only bounds the size.
+	if len(b) > MaxDatagramSize {
 		return diag.ErrInvalidPacket
 	}
 	d.deliver(b)
