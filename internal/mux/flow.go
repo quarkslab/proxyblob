@@ -31,7 +31,8 @@ type FlowConfig struct {
 
 func DefaultFlowConfig() FlowConfig {
 	return FlowConfig{
-		StreamWindow: 512 << 10, MaxStreamWindow: 4 << 20, TunnelWindow: 64 << 20, MaxStreams: 128,
+		// TunnelWindow admits MaxStreams at StreamWindow plus 32 MiB of growth.
+		StreamWindow: 512 << 10, MaxStreamWindow: 4 << 20, TunnelWindow: 96 << 20, MaxStreams: 128,
 		UDPQueueBytes: DatagramQueueBytes, UDPQueuePackets: DatagramQueuePackets, UDPDestinations: 64,
 		DataFrame: 32 << 10, ControlSlots: 512, DrainTimeout: DrainTimeout,
 	}
@@ -115,10 +116,13 @@ func (h *BaseHandler) releaseReservation(window int) {
 }
 
 // growReservation claims delta more of the tunnel budget for a growing window.
+// It always leaves room to admit MaxStreams streams at the initial window, so
+// growth never causes a new stream to be refused.
 func (h *BaseHandler) growReservation(delta int) bool {
 	h.flowMu.Lock()
 	defer h.flowMu.Unlock()
-	if h.reserved > h.flow.TunnelWindow-delta {
+	admission := (h.flow.MaxStreams - h.streams) * h.flow.StreamWindow
+	if h.reserved+admission > h.flow.TunnelWindow-delta {
 		return false
 	}
 	h.reserved += delta

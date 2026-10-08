@@ -30,7 +30,6 @@ type Connection struct {
 	buffer                         []byte // receive ring, grown on demand up to window
 	head, used                     int
 	window                         int    // receive window currently granted to the peer
-	maxUsed                        int    // largest backlog since growthEpoch
 	growthEpoch                    uint64 // consumed bytes when the window last grew or was judged
 	consumed, credited             uint64
 	changed                        chan struct{}
@@ -151,7 +150,6 @@ func (c *Connection) Deliver(data []byte) bool {
 	n := copy(c.buffer[tail:], data)
 	copy(c.buffer, data[n:])
 	c.used += len(data)
-	c.maxUsed = max(c.maxUsed, c.used)
 	c.returnCredit()
 	c.notifyReader()
 	return true
@@ -270,21 +268,20 @@ func (c *Connection) returnCredit() {
 }
 
 // growWindow doubles the receive window, up to MaxStreamWindow and within the
-// tunnel budget, once a full window has been consumed while the backlog never
-// exceeded half of it: the reader keeps up, so the window is what limits the
-// transfer. Slow readers and small exchanges keep the initial window. Runs
-// under deliveryMu; the next credit announces the new window.
+// tunnel's growth budget, each time a full window has been consumed: the
+// stream is in a sustained transfer, where the window bounds throughput to one
+// window per round trip. Exchanges smaller than a window never grow. (The
+// backlog cannot tell a slow reader apart: the transport delivers in bursts of
+// up to a whole chunk.) Runs under deliveryMu; the next credit announces it.
 func (c *Connection) growWindow() {
 	if c.consumed-c.growthEpoch < uint64(c.window) {
 		return
 	}
-	limit := c.handler.flow.MaxStreamWindow
-	if c.maxUsed <= c.window/2 && c.window < limit {
+	if limit := c.handler.flow.MaxStreamWindow; c.window < limit {
 		delta := min(c.window, limit-c.window)
 		if c.handler.growReservation(delta) {
 			c.window += delta
 		}
 	}
 	c.growthEpoch = c.consumed
-	c.maxUsed = c.used
 }

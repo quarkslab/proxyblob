@@ -58,43 +58,39 @@ func TestWindowGrowsForFastReader(t *testing.T) {
 	}
 }
 
-func TestWindowStaysForSlowReader(t *testing.T) {
+func TestWindowStaysForSmallExchanges(t *testing.T) {
 	cfg := DefaultFlowConfig()
 	opener, acceptor := sessionPair(t, cfg, WithAccept())
 	local, remote := openAccepted(t, opener, acceptor)
-	// The reader lets the full window pile up before each read: the backlog,
-	// not the window, limits this transfer, so more memory would not help.
-	transfer(t, local, remote, 4*cfg.StreamWindow, func(r io.Reader) ([]byte, error) {
-		var got []byte
-		buf := make([]byte, cfg.StreamWindow)
-		for {
-			deadline := time.Now().Add(time.Second)
-			for {
-				remote.owner.deliveryMu.Lock()
-				used, ended := remote.owner.used, remote.owner.deliveryEnded
-				remote.owner.deliveryMu.Unlock()
-				if used == cfg.StreamWindow || ended || time.Now().After(deadline) {
-					break
-				}
-				time.Sleep(time.Millisecond)
-			}
-			n, err := io.ReadFull(r, buf)
-			got = append(got, buf[:n]...)
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				return got, nil
-			}
-			if err != nil {
-				return got, err
-			}
-		}
-	})
+	transfer(t, local, remote, cfg.StreamWindow-1, io.ReadAll)
 	if window, _ := receiveWindow(remote); window != cfg.StreamWindow {
-		t.Fatalf("slow reader window grew to %d", window)
+		t.Fatalf("exchange below one window grew it to %d", window)
+	}
+}
+
+func TestWindowGrowthKeepsAdmission(t *testing.T) {
+	cfg := DefaultFlowConfig()
+	cfg.MaxStreams = 4
+	cfg.ControlSlots = 16
+	cfg.TunnelWindow = cfg.MaxStreams*cfg.StreamWindow + cfg.StreamWindow
+	opener, acceptor := sessionPair(t, cfg, WithAccept())
+	local, remote := openAccepted(t, opener, acceptor)
+	transfer(t, local, remote, 8<<20, io.ReadAll)
+	if window, _ := receiveWindow(remote); window != 2*cfg.StreamWindow {
+		t.Fatalf("growth took %d, beyond the spare budget", window)
+	}
+	// Every remaining stream slot is still admitted at the initial window.
+	for i := 1; i < cfg.MaxStreams; i++ {
+		if _, err := acceptor.Reserve(); err != nil {
+			t.Fatalf("stream %d refused after growth: %v", i+1, err)
+		}
 	}
 }
 
 func TestWindowGrowthRespectsTunnelBudget(t *testing.T) {
 	cfg := DefaultFlowConfig()
+	cfg.MaxStreams = 1
+	cfg.ControlSlots = 4
 	cfg.TunnelWindow = 2 * cfg.StreamWindow
 	opener, acceptor := sessionPair(t, cfg, WithAccept())
 	local, remote := openAccepted(t, opener, acceptor)
@@ -102,11 +98,9 @@ func TestWindowGrowthRespectsTunnelBudget(t *testing.T) {
 	if window, _ := receiveWindow(remote); window != cfg.TunnelWindow {
 		t.Fatalf("window %d beyond or below the %d budget", window, cfg.TunnelWindow)
 	}
-	// The grown window is charged to the tunnel until the stream closes.
-	if _, err := acceptor.Reserve(); err == nil {
-		t.Fatal("budget not charged for the grown window")
-	}
+	// Closing the stream returns its grown window to the budget.
 	remote.Close()
+	local.Close()
 	deadline := time.Now().Add(time.Second)
 	for {
 		r, err := acceptor.Reserve()
@@ -118,6 +112,12 @@ func TestWindowGrowthRespectsTunnelBudget(t *testing.T) {
 			t.Fatalf("closing did not release the grown window: %v", err)
 		}
 		time.Sleep(time.Millisecond)
+	}
+	acceptor.flowMu.Lock()
+	reserved := acceptor.reserved
+	acceptor.flowMu.Unlock()
+	if reserved != 0 {
+		t.Fatalf("%d bytes still reserved", reserved)
 	}
 }
 
