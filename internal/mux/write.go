@@ -42,10 +42,6 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 		limit = h.flow.DataFrame
 	case CmdDatagram:
 		limit = MaxDatagramSize
-	case CmdUDPAssociate:
-		limit = 259
-	case CmdUDPReady:
-		limit = 20
 	}
 	if len(data) > limit {
 		return nil, diag.ErrMalformedPacket

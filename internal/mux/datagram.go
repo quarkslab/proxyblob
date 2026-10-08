@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// UDP uses whole-datagram drop admission, independently of TCP receive credit.
-// Association counts share MaxStreams. Each association retains at most 256 KiB
-// and 64 incoming records; outgoing records share the fair bounded DATA queue.
+// Datagrams are whole messages on a stream, delivered outside TCP receive
+// credit with drop admission: each stream retains at most UDPQueuePackets and
+// UDPQueueBytes incoming; outgoing datagrams share the fair bounded DATA queue.
 const MaxDatagramSize = 65507
 const DatagramQueueBytes = 256 << 10
 const DatagramQueuePackets = 64
@@ -23,7 +23,6 @@ type Datagrams struct {
 	queue   [][]byte
 	bytes   int
 	changed chan struct{}
-	ready   chan []byte
 }
 
 func (c *Connection) EnableDatagrams() *Datagrams {
@@ -32,20 +31,12 @@ func (c *Connection) EnableDatagrams() *Datagrams {
 	if c.disposed || c.datagrams != nil {
 		return nil
 	}
-	d := &Datagrams{conn: c, changed: make(chan struct{}), ready: make(chan []byte, 1)}
+	d := &Datagrams{conn: c, changed: make(chan struct{})}
 	c.datagrams = d
 	return d
 }
 func (c *Connection) Datagrams() *Datagrams { c.mu.Lock(); defer c.mu.Unlock(); return c.datagrams }
-func (c *Connection) DestinationAddresses() (net.Addr, net.Addr) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.destination == nil {
-		return nil, nil
-	}
-	return c.destination.LocalAddr(), c.destination.RemoteAddr()
-}
-func (d *Datagrams) clear() { d.mu.Lock(); defer d.mu.Unlock(); d.queue = nil; d.bytes = 0 }
+func (d *Datagrams) clear()                 { d.mu.Lock(); defer d.mu.Unlock(); d.queue = nil; d.bytes = 0 }
 func (d *Datagrams) deliver(b []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -94,60 +85,14 @@ func (d *Datagrams) Send(b []byte) error {
 	_, err := d.conn.handler.enqueue(CmdDatagram, d.conn.ID, b, d.conn.Closed, false)
 	return err
 }
-func (d *Datagrams) Request(address []byte) ([]byte, error) {
-	if err := d.conn.handler.sendConfirmed(CmdUDPAssociate, d.conn.ID, address, d.conn.Closed); err != nil {
-		return nil, err
-	}
-	select {
-	case b := <-d.ready:
-		return b, nil
-	case <-d.conn.Closed:
-		return nil, net.ErrClosed
-	case <-d.conn.stop:
-		return nil, net.ErrClosed
-	}
-}
-func (d *Datagrams) Ready(address []byte) error {
-	return d.conn.handler.sendConfirmed(CmdUDPReady, d.conn.ID, append([]byte{0}, address...), d.conn.Closed)
-}
-
-// Reject reports a SOCKS setup failure to the negotiating agent.
-func (d *Datagrams) Reject(code byte) error {
-	return d.conn.handler.sendConfirmed(CmdUDPReady, d.conn.ID, []byte{code, 1, 0, 0, 0, 0, 0, 0}, d.conn.Closed)
-}
-
-func (h *BaseHandler) receiveDatagram(cmd byte, id uuid.UUID, b []byte) byte {
+func (h *BaseHandler) receiveDatagram(id uuid.UUID, b []byte) byte {
 	v, ok := h.Connections.Load(id)
 	if !ok {
 		return diag.ErrNone
 	}
-	c := v.(*Connection)
-	if cmd == CmdUDPAssociate {
-		if len(b) > 259 || len(b) < 5 {
-			return diag.ErrInvalidPacket
-		}
-		receiver, ok := h.PacketHandler.(interface {
-			OnUDPAssociate(*Connection, []byte) byte
-		})
-		if !ok {
-			return diag.ErrUnexpectedPacket
-		}
-		return receiver.OnUDPAssociate(c, b)
-	}
-	d := c.Datagrams()
+	d := v.(*Connection).Datagrams()
 	if d == nil {
 		return diag.ErrInvalidState
-	}
-	if cmd == CmdUDPReady {
-		if len(b) < 8 || len(b) > 20 {
-			return diag.ErrInvalidPacket
-		}
-		select {
-		case d.ready <- append([]byte(nil), b...):
-			return diag.ErrNone
-		default:
-			return diag.ErrInvalidState
-		}
 	}
 	// Content is the application's: mux only bounds the size.
 	if len(b) > MaxDatagramSize {

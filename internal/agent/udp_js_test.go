@@ -7,64 +7,49 @@ import (
 	"context"
 	"io"
 	"net"
-	"proxyblob/internal/agent/netenv/netenvtest"
-	"proxyblob/internal/diag"
-	"proxyblob/internal/socks5"
 	"testing"
 	"time"
 
+	"proxyblob/internal/agent/netenv/netenvtest"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/mux"
-
-	"github.com/google/uuid"
+	"proxyblob/internal/relay"
+	"proxyblob/internal/socks5"
 )
 
-// This peer runs the real multiplexed protocol against the WASM agent handler.
-// The separate Linux namespace harness tests the native client-facing proxy.
-// Here the target UDP socket and DNS are real Bun host operations.
-type udpTestPeer struct {
-	*mux.BaseHandler
-	ready chan *mux.Datagrams
+// agentStream opens one stream to a WASM agent over the real multiplexed
+// protocol, as the proxy would. Target sockets and DNS are real Bun host
+// operations; the native client-facing proxy is covered by tests/integration.
+func agentStream(t *testing.T) *mux.ProtocolConn {
+	t.Helper()
+	a, b := net.Pipe()
+	agent := New(context.Background(), b)
+	agent.Start()
+	peer, err := mux.NewSession(context.Background(), a, mux.DefaultFlowConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer.StartReceiving()
+	t.Cleanup(func() { peer.Stop(); agent.Stop(); a.Close(); b.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stream, err := peer.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stream
 }
 
-func (h *udpTestPeer) Stop()                        { h.Abort() }
-func (h *udpTestPeer) OnNew(uuid.UUID, []byte) byte { return diag.ErrUnexpectedPacket }
-func (h *udpTestPeer) OnAck(id uuid.UUID, _ []byte) byte {
-	v, ok := h.Connections.Load(id)
-	if !ok {
-		return diag.ErrConnectionNotFound
-	}
-	if !v.(*mux.Connection).SetProtocolConn(mux.NewProtocolConn(h.Ctx, id, h.BaseHandler)) {
-		return diag.ErrConnectionClosed
-	}
-	return diag.ErrNone
-}
-func (h *udpTestPeer) OnData(id uuid.UUID, b []byte) byte {
-	v, ok := h.Connections.Load(id)
-	if !ok || !v.(*mux.Connection).Deliver(b) {
-		return diag.ErrConnectionClosed
-	}
-	return diag.ErrNone
-}
-func (h *udpTestPeer) OnClose(id uuid.UUID, code byte) byte { return h.PeerClose(id, code) }
-func (h *udpTestPeer) OnUDPAssociate(c *mux.Connection, _ []byte) byte {
-	d := c.EnableDatagrams()
-	if d == nil {
-		return diag.ErrInvalidState
-	}
-	h.ready <- d
-	go d.Ready([]byte{1, 127, 0, 0, 1, 4, 56})
-	return diag.ErrNone
-}
 func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
 	port := netenvtest.RealPeer(t, "udp")
-	peer, c := udpTestControl(t)
-	control := c.ProtocolConn()
-	control.Write([]byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0})
-	var reply [10]byte
-	if _, err := io.ReadFull(control, reply[:]); err != nil || reply[1] != 0 {
-		t.Fatalf("associate %v %v", reply, err)
+	stream := agentStream(t)
+	d := stream.EnableDatagrams()
+	if err := relay.WriteRequest(stream, relay.UDP, socks5.UDPAddress(&net.UDPAddr{IP: net.IPv4zero})); err != nil {
+		t.Fatal(err)
 	}
-	d := <-peer.ready
+	if code, _, err := relay.ReadReply(stream); err != nil || code != diag.ErrNone {
+		t.Fatalf("associate %d %v", code, err)
+	}
 	for _, host := range []string{"127.0.0.1", "::1", "localhost"} {
 		address := socks5.UDPAddress(&net.UDPAddr{IP: net.ParseIP(host), Port: port})
 		if host == "localhost" {
@@ -82,59 +67,28 @@ func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source, header, code := socks5.ExtractUDPHeader(got)
+			source, header, code := relay.ParseDatagram(got)
 			addr, e := net.ResolveUDPAddr("udp", source)
 			if code != 0 || e != nil || !addr.IP.IsLoopback() || addr.Port != port || !bytes.Equal(got[header:], payload) {
 				t.Fatalf("%s tunnel reply: %s %v", host, source, e)
 			}
 		}
 	}
-	if err := control.CloseWrite(); err != nil {
+	// The proxy's EOF ends the association; the agent then closes the stream.
+	if err := stream.CloseWrite(); err != nil {
 		t.Fatal(err)
 	}
 	var end [1]byte
-	if _, err := control.Read(end[:]); err != io.EOF {
-		t.Fatalf("control EOF: %v", err)
+	if _, err := stream.Read(end[:]); err != io.EOF {
+		t.Fatalf("association EOF: %v", err)
 	}
-	c.Close()
-}
-
-func udpTestControl(t *testing.T) (*udpTestPeer, *mux.Connection) {
-	t.Helper()
-	a, b := net.Pipe()
-	agent := NewSocksHandler(context.Background(), b)
-	base := mux.NewBaseHandler(context.Background(), a)
-	peer := &udpTestPeer{base, make(chan *mux.Datagrams, 1)}
-	base.PacketHandler = peer
-	agent.Start("")
-	go peer.ReceiveLoop()
-	t.Cleanup(func() { peer.Stop(); agent.Stop(); a.Close(); b.Close() })
-	c := mux.NewConnection(uuid.New(), peer.Ctx.Done())
-	if err := peer.RegisterConnection(c); err != nil {
-		t.Fatal(err)
-	}
-	if peer.SendNewConnection(c.ID) != 0 {
-		t.Fatal("new connection")
-	}
-	select {
-	case <-c.Established():
-	case <-time.After(time.Second):
-		t.Fatal("ACK")
-	}
-	control := c.ProtocolConn()
-	control.Write([]byte{5, 1, 0})
-	var auth [2]byte
-	if _, err := io.ReadFull(control, auth[:]); err != nil || auth != [2]byte{5, 0} {
-		t.Fatalf("auth %v %v", auth, err)
-	}
-	return peer, c
 }
 
 func TestJSUDPControlCloseCancelsPendingBind(t *testing.T) {
 	state := netenvtest.Host(t, "pending")
-	_, c := udpTestControl(t)
-	control := c.ProtocolConn()
-	if _, err := control.Write([]byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+	stream := agentStream(t)
+	stream.EnableDatagrams()
+	if err := relay.WriteRequest(stream, relay.UDP, socks5.UDPAddress(&net.UDPAddr{IP: net.IPv4zero})); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -144,12 +98,12 @@ func TestJSUDPControlCloseCancelsPendingBind(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if err := control.CloseWrite(); err != nil {
+	if err := stream.CloseWrite(); err != nil {
 		t.Fatal(err)
 	}
 	for state.Call("counts").Get("disposed").Int() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("control EOF did not cancel pending bind")
+			t.Fatal("proxy EOF did not cancel pending bind")
 		}
 		time.Sleep(time.Millisecond)
 	}

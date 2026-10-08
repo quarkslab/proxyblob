@@ -31,7 +31,7 @@ import (
 	"syscall"
 	"time"
 
-	socks "proxyblob/internal/agent"
+	agentpkg "proxyblob/internal/agent"
 	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
 
@@ -152,7 +152,7 @@ func serve(args []string) error {
 	stopped := make(chan error, 2)
 	var socksListen net.Addr
 	if *muxKind == "proxyblob" {
-		agent, err := socks.NewSocksHandlerWithConfig(ctx, agentConn, cfg)
+		agent, err := agentpkg.NewWithConfig(ctx, agentConn, cfg)
 		if err != nil {
 			return err
 		}
@@ -160,7 +160,7 @@ func serve(args []string) error {
 		if err != nil {
 			return err
 		}
-		agent.Start("")
+		agent.Start()
 		server.Start(*socksAddr)
 		defer agent.Stop()
 		defer server.Stop()

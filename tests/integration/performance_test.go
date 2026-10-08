@@ -7,7 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
-	socks "proxyblob/internal/agent"
+	tunnel "proxyblob/internal/agent"
 	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
 	"strconv"
@@ -96,12 +96,12 @@ func TestStorageFixedTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Stop()
-	h, err := socks.NewSocksHandlerWithConfig(context.Background(), b, cfg)
+	h, err := tunnel.NewWithConfig(context.Background(), b, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Stop()
-	h.Start("")
+	h.Start()
 	s.Start("127.0.0.1:0")
 	client, err := net.Dial("tcp", s.ListenerAddr().String())
 	if err != nil {

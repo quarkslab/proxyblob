@@ -7,7 +7,7 @@ import (
 	"errors"
 	"net"
 	"proxyblob/internal/diag"
-	"proxyblob/internal/socks5"
+	"proxyblob/internal/relay"
 	"strconv"
 	"sync"
 
@@ -17,42 +17,41 @@ import (
 // BIND accepts only the requested peer IP(s) and port; unspecified IP and port
 // zero are explicit wildcards. DNS is resolved once so the policy cannot change
 // between replies. The setup timeout is configurable through WithBindTimeout.
-func (h *SocksHandler) handleBind(c *mux.Connection, data []byte) byte {
-	target, code := socks5.ParseAddress(data[3:])
+// The first reply carries the listening address, the second the accepted peer.
+func (a *Agent) bind(stream *mux.ProtocolConn, addr []byte) {
+	target, code := relay.ParseAddress(addr)
 	if code != diag.ErrNone {
-		h.SendError(c, code)
-		return code
+		a.fail(stream, code)
+		return
 	}
-	setup, cancel := socketSetupContext(h.Ctx, c.Closed)
+	setup, cancel := socketSetupContext(a.Ctx, stream.Done())
 	defer cancel()
-	ctx, deadline := context.WithTimeout(setup, h.bindTimeout)
+	ctx, deadline := context.WithTimeout(setup, a.bindTimeout)
 	defer deadline()
 	go func() {
 		select {
-		case <-c.ReceiveDone():
+		case <-stream.ReceiveDone():
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
 	ips, port, err := bindPeer(ctx, target)
 	if err != nil {
-		code = diag.MapNetError(err)
-		h.SendError(c, code)
-		return code
+		a.fail(stream, diag.MapNetError(err))
+		return
 	}
 	listener, err := listenBind(ctx, ips)
 	if err != nil {
-		code = diag.MapNetError(err)
-		h.SendError(c, code)
-		return code
+		a.fail(stream, diag.MapNetError(err))
+		return
 	}
 	var once sync.Once
 	closeListener := func() { once.Do(func() { listener.Close() }) }
 	defer closeListener()
 	stop := context.AfterFunc(ctx, closeListener)
 	defer stop()
-	if code = h.sendTCPReply(c, socks5.Succeeded, listener.Addr().(*net.TCPAddr)); code != diag.ErrNone {
-		return code
+	if relay.WriteReply(stream, diag.ErrNone, listener.Addr()) != nil {
+		return
 	}
 	for {
 		peer, err := listener.Accept()
@@ -62,13 +61,13 @@ func (h *SocksHandler) handleBind(c *mux.Connection, data []byte) byte {
 			} else {
 				code = diag.MapNetError(err)
 			}
-			h.SendError(c, code)
-			return code
+			a.fail(stream, code)
+			return
 		}
 		if ctx.Err() != nil {
 			peer.Close()
-			h.SendError(c, diag.ErrTTLExpired)
-			return diag.ErrTTLExpired
+			a.fail(stream, diag.ErrTTLExpired)
+			return
 		}
 		remote := peer.RemoteAddr().(*net.TCPAddr)
 		allowed := port == 0 || remote.Port == port
@@ -84,17 +83,18 @@ func (h *SocksHandler) handleBind(c *mux.Connection, data []byte) byte {
 			continue
 		}
 		closeListener()
-		// Cancel only setup watchers; the accepted socket belongs to Connection.
+		// Cancel only setup watchers; the accepted socket belongs to the stream.
 		deadline()
 		cancel()
 		owned := &bindConn{TCPConn: peer.(*net.TCPConn)}
-		if !c.AttachDestination(owned) {
-			return diag.ErrConnectionClosed
+		if !stream.AttachDestination(owned) {
+			return
 		}
-		if code = h.sendTCPReply(c, socks5.Succeeded, remote); code != diag.ErrNone {
-			return code
+		if relay.WriteReply(stream, diag.ErrNone, remote) != nil {
+			return
 		}
-		return h.handleTCPDataTransfer(c, owned)
+		a.forward(stream, owned)
+		return
 	}
 }
 

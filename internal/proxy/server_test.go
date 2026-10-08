@@ -133,23 +133,21 @@ func TestLocalStopNotifiesPeerAfterNew(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	// Leave NEW's write blocked until after local stop, reproducing admission
-	// racing shutdown while the session stays alive.
-	deadline := time.Now().Add(time.Second)
-	for {
-		found := false
-		s.Connections.Range(func(_, _ any) bool { found = true; return false })
-		if found {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("client not registered")
-		}
-		time.Sleep(time.Millisecond)
+	// NEW is sent only once SOCKS negotiation produced a request.
+	client.SetDeadline(time.Now().Add(time.Second))
+	if _, err := client.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
 	}
-	s.StopListening()
+	var auth [2]byte
+	if _, err := io.ReadFull(client, auth[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, 0, 80}); err != nil {
+		t.Fatal(err)
+	}
 	peer.SetReadDeadline(time.Now().Add(time.Second))
-	for _, want := range []byte{mux.CmdNew, mux.CmdClose} {
+	readRecord := func(want byte) {
+		t.Helper()
 		header := make([]byte, mux.HeaderSize)
 		if _, err := io.ReadFull(peer, header); err != nil {
 			t.Fatalf("missing peer record %d: %v", want, err)
@@ -162,4 +160,8 @@ func TestLocalStopNotifiesPeerAfterNew(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The stream is announced and awaiting its ACK when the local listener stops.
+	readRecord(mux.CmdNew)
+	s.StopListening()
+	readRecord(mux.CmdClose)
 }

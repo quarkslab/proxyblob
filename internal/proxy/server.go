@@ -1,38 +1,30 @@
-// Package proxy implements a SOCKS proxy server.
-// It accepts client connections and forwards traffic through transport channels
-// to remote agents. The server manages connection lifecycle and bidirectional
-// data transfer.
+// Package proxy is the operator-side SOCKS5 front-end for one agent. It
+// negotiates SOCKS5 with each local client, then carries the request to the
+// agent as one relay request on its own tunnel stream.
 package proxy
 
 import (
 	"context"
 	"errors"
 	"net"
-	"proxyblob/internal/diag"
-	"proxyblob/internal/mux"
 	"sync"
-	"time"
 
-	"github.com/google/uuid"
+	"proxyblob/internal/mux"
+
 	"github.com/rs/zerolog/log"
 )
 
-// ProxyServer implements a SOCKS proxy server that forwards traffic transparently.
-// It accepts client connections and manages the protocol flow between clients and
-// remote agents.
+// ProxyServer serves SOCKS5 clients over one agent session.
 type ProxyServer struct {
-	// BaseHandler provides common protocol functionality
-	*mux.BaseHandler
+	*mux.Session
 
 	// listener accepts incoming TCP connections; lifecycleMu guards replacement.
 	listener    net.Listener
-	receiveOnce sync.Once
 	lifecycleMu sync.Mutex
 	stopOnce    sync.Once
 }
 
-// NewProxyServer creates a proxy server instance with the given connection.
-// The connection is used for communication with remote agents.
+// NewProxyServer creates a proxy server with the default flow configuration.
 func NewProxyServer(ctx context.Context, conn net.Conn) *ProxyServer {
 	server, err := NewProxyServerWithConfig(ctx, conn, mux.DefaultFlowConfig())
 	if err != nil {
@@ -41,20 +33,18 @@ func NewProxyServer(ctx context.Context, conn net.Conn) *ProxyServer {
 	return server
 }
 
+// NewProxyServerWithConfig creates a proxy server over the agent session conn.
 func NewProxyServerWithConfig(ctx context.Context, conn net.Conn, cfg mux.FlowConfig) (*ProxyServer, error) {
-	base, err := mux.NewBaseHandlerWithConfig(ctx, conn, cfg)
+	session, err := mux.NewSession(ctx, conn, cfg)
 	if err != nil {
 		return nil, err
 	}
-	server := &ProxyServer{BaseHandler: base}
-	server.PacketHandler = server
-	server.OnError = protocolErrorReporter(log.Logger)
-	return server, nil
+	session.OnError = protocolErrorReporter(log.Logger)
+	return &ProxyServer{Session: session}, nil
 }
 
-// Start begins listening for client connections on the specified address.
-// It launches background goroutines for accepting connections and processing
-// protocol messages. A local bind failure leaves the agent session alive.
+// Start begins listening for SOCKS clients on address. A local bind failure
+// leaves the agent session alive.
 func (s *ProxyServer) Start(address string) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -67,7 +57,6 @@ func (s *ProxyServer) Start(address string) {
 		log.Error().Err(err).Str("addr", address).Msg("Failed to listen on address")
 		return
 	}
-
 	s.StartReceiving()
 	go s.acceptLoop(s.listener)
 }
@@ -98,18 +87,12 @@ func (s *ProxyServer) StopListening() {
 	})
 }
 
-// StartReceiving monitors the tunnel independently of the local SOCKS listener.
-// Start may be called later without creating a second reader.
-func (s *ProxyServer) StartReceiving() { s.receiveOnce.Do(func() { go s.ReceiveLoop() }) }
-
-// Stop aborts pending I/O and terminates the proxy server by closing all active
-// connections, canceling the handler's context, and stopping the listener.
+// Stop aborts pending I/O and every client, and stops listening.
 func (s *ProxyServer) Stop() {
 	s.stopOnce.Do(func() {
 		s.lifecycleMu.Lock()
 		defer s.lifecycleMu.Unlock()
-		s.CloseAllConnections()
-		s.Abort()
+		s.Session.Stop()
 		if s.listener != nil {
 			s.listener.Close()
 			s.listener = nil
@@ -117,180 +100,44 @@ func (s *ProxyServer) Stop() {
 	})
 }
 
-// OnNew handles new connection requests. The server is the only one initiating
-// connections, so this always returns ErrUnexpectedPacket.
-func (s *ProxyServer) OnNew(connectionID uuid.UUID, data []byte) byte {
-	return diag.ErrUnexpectedPacket
-}
-
-// OnAck processes connection acknowledgments from agents.
-// Returns an error code indicating success or failure.
-func (s *ProxyServer) OnAck(connectionID uuid.UUID, data []byte) byte {
-	value, ok := s.Connections.Load(connectionID)
-	if !ok {
-		return diag.ErrConnectionNotFound
-	}
-	conn := value.(*mux.Connection)
-
-	// Check if connection already established (ProtocolConn should be nil for new connections)
-	if conn.ProtocolConn() != nil {
-		return diag.ErrInvalidState
-	}
-
-	// Create the virtual protocol connection (marks connection as established)
-	if !conn.SetProtocolConn(mux.NewProtocolConn(s.Ctx, connectionID, s.BaseHandler)) {
-		return diag.ErrConnectionClosed
-	}
-	conn.StartDelivery()
-
-	return diag.ErrNone
-}
-
-// OnData processes data received from agents and forwards it to the client.
-// Returns an error code indicating success or failure.
-func (s *ProxyServer) OnData(connectionID uuid.UUID, data []byte) byte {
-	value, ok := s.Connections.Load(connectionID)
-	if !ok {
-		return diag.ErrConnectionNotFound
-	}
-	conn := value.(*mux.Connection)
-
-	// The connection is only ready to receive data once OnAck has created the
-	// virtual protocol connection. Dropping the payload here would be silent
-	// data loss, so report the unexpected state instead.
-	if conn.ProtocolConn() == nil {
-		return diag.ErrInvalidState
-	}
-
-	// Delivery uses reserved memory and never blocks shared dispatch. The
-	// sender must pause before exhausting its negotiated receive credit.
-	if !conn.Deliver(data) {
-		return diag.ErrConnectionClosed
-	}
-	return diag.ErrNone
-}
-
-// OnClose handles connection termination from agents. It cleans up the
-// connection state.
-func (s *ProxyServer) OnClose(connectionID uuid.UUID, errorCode byte) byte {
-	s.ReportError(connectionID, errorCode)
-	return s.PeerClose(connectionID, errorCode)
-}
-
-// cleanupConnection closes all connection resources and removes from connection map.
-// This helper reduces code duplication in handleConnection.
-func (s *ProxyServer) cleanupConnection(connID uuid.UUID, clientConn net.Conn, proxyConn *mux.Connection) {
-	clientConn.Close()
-	if pc := proxyConn.ProtocolConn(); pc != nil {
-		pc.Close()
-	}
-	proxyConn.Close()
-	s.Connections.Delete(connID)
-}
-
-// acceptLoop accepts incoming TCP connections and spawns goroutines to handle
-// each one. It continues until the context is canceled or a non-temporary
-// error occurs.
+// acceptLoop serves clients until the listener or the session closes.
 func (s *ProxyServer) acceptLoop(listener net.Listener) {
 	for {
-		select {
-		case <-s.Ctx.Done():
-			return
-		default:
-			conn, err := listener.Accept()
-			if err != nil {
-				if s.Ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-					return // Exit quietly on session or local listener shutdown
-				}
-
-				if _, ok := err.(net.Error); ok {
-					continue // Retry on temporary network errors
-				}
-				return
+		conn, err := listener.Accept()
+		if err != nil {
+			if s.Ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return // session or local listener shutdown
 			}
-
-			go s.handleConnection(listener, conn)
+			if _, ok := err.(net.Error); ok {
+				continue // retry temporary network errors
+			}
+			return
 		}
+		go s.handleConnection(listener, conn)
 	}
 }
 
-// AckTimeout bounds how long a new logical connection waits for the agent's
-// acknowledgment before being abandoned.
-//
-// It covers connection setup only: no payload flows until the acknowledgment
-// arrives, so the deadline is never refreshed by progress, and once the
-// connection is established no further timeout applies. It therefore bounds
-// round-trip latency under contention, not transfer duration.
-//
-// All logical connections share a single transport, so their acknowledgments
-// serialize and the last connection opened waits behind every other one. The
-// value must accommodate that queueing delay on a high-latency driver, not
-// just one round trip. The cost of a generous bound is that an unreachable
-// agent takes this long to report.
-const AckTimeout = 120 * time.Second
-
-// handleConnection processes a new client connection by:
-//   - Generating a unique connection ID
-//   - Initiating connection with remote agent
-//   - Setting up bidirectional data forwarding
-//   - Managing connection lifecycle and cleanup
-func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Conn) {
-	defer clientConn.Close()
-
-	// Enable TCP_NODELAY to disable Nagle's algorithm for better TLS performance
-	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetNoDelay(true)
+// handleConnection reserves a tunnel stream before negotiating, so a client
+// beyond the session's capacity is refused before any SOCKS reply, then
+// negotiates SOCKS5 locally and serves the request.
+func (s *ProxyServer) handleConnection(listener net.Listener, client net.Conn) {
+	defer client.Close()
+	// Disable Nagle's algorithm for better TLS performance.
+	if tcp, ok := client.(*net.TCPConn); ok {
+		tcp.SetNoDelay(true)
 	}
-
-	connID := uuid.New()
-	proxyConn := mux.NewConnection(connID, s.Ctx.Done())
 	s.lifecycleMu.Lock()
 	if s.listener != listener || s.Ctx.Err() != nil {
 		s.lifecycleMu.Unlock()
 		return
 	}
-	proxyConn.AttachDestination(clientConn)
-	if err := s.RegisterConnection(proxyConn); err != nil {
-		s.lifecycleMu.Unlock()
-		proxyConn.Close()
-		return
-	}
-	s.lifecycleMu.Unlock()
-
-	// 1. Initiate connection with the agent
-	errCode := s.SendNewConnection(connID)
-	if errCode != diag.ErrNone {
-		proxyConn.Close()
-		return
-	}
-
-	// 2. Wait for the agent's acknowledgment. OnAck publishes the virtual
-	// connection and closes Established() from the receive goroutine, so we block
-	// on that signal rather than polling for the pointer.
-	select {
-	case <-s.Ctx.Done():
-		s.SendClose(connID, diag.ErrHandlerStopped)
-		s.Connections.Delete(connID)
-		return
-	case <-proxyConn.Closed:
-		s.SendClose(connID, diag.ErrHandlerStopped)
-		s.Connections.Delete(connID)
-		return
-	case <-time.After(AckTimeout):
-		s.SendClose(connID, diag.ErrTransportTimeout)
-		s.Connections.Delete(connID)
-		return
-	case <-proxyConn.Established():
-		// Agent acknowledged connection.
-	}
-
-	// Forward owns both copy lifetimes and propagates directional EOF.
-	err := mux.Forward(proxyConn.ProtocolConn(), clientConn)
-	if err == nil {
-		s.SendClose(connID, diag.ErrNone)
-	}
-	s.cleanupConnection(connID, clientConn, proxyConn)
+	reservation, err := s.Reserve()
 	if err != nil {
-		s.ReportError(connID, diag.StreamErrorCode(err))
+		s.lifecycleMu.Unlock()
+		return
 	}
+	// Closing the reservation (StopListening, Stop) also closes the client.
+	reservation.AttachDestination(client)
+	s.lifecycleMu.Unlock()
+	s.serveSOCKS(client, reservation)
 }

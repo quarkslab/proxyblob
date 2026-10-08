@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	proxy "proxyblob/internal/agent"
+	tunnel "proxyblob/internal/agent"
 	"proxyblob/internal/mux"
 
 	"github.com/atsika/aznet"
@@ -34,7 +34,7 @@ var ConnString string
 
 // Agent manages proxy operations and aznet communication.
 type Agent struct {
-	Handler *proxy.SocksHandler // SOCKS handler
+	Handler *tunnel.Agent // serves the proxy's relay requests
 }
 
 // NewAgent creates an agent from a connection string.
@@ -68,14 +68,13 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 		return nil, ErrIdentityExchange
 	}
 
-	// Create SOCKS handler with direct connection (no transport wrapper)
 	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
 		reportError(diag.ErrorCode(err))
 		conn.Close()
 		return nil, ErrConnectionStringError
 	}
-	handler, err := proxy.NewSocksHandlerWithConfig(ctx, conn, cfg)
+	handler, err := tunnel.NewWithConfig(ctx, conn, cfg)
 	if err != nil {
 		conn.Close()
 		return nil, ErrConnectionStringError
@@ -91,7 +90,7 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 // Start begins processing proxy requests.
 func (a *Agent) Start(ctx context.Context) int {
 	// Start the handler
-	a.Handler.Start("")
+	a.Handler.Start()
 
 	// Wait for handler context to be done
 	<-a.Handler.Ctx.Done()

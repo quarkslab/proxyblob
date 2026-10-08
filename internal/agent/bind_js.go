@@ -7,7 +7,7 @@ import (
 	"proxyblob/internal/mux"
 )
 
-func (h *SocksHandler) handleBind(c *mux.Connection, _ []byte) byte {
-	h.SendError(c, diag.ErrUnsupportedCommand)
-	return diag.ErrUnsupportedCommand
+// The JS host offers no TCP listener, so BIND is not supported in WASM.
+func (a *Agent) bind(stream *mux.ProtocolConn, _ []byte) {
+	a.fail(stream, diag.ErrUnsupportedCommand)
 }

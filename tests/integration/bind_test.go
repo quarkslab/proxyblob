@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	socks "proxyblob/internal/agent"
+	tunnel "proxyblob/internal/agent"
 	proxy "proxyblob/internal/proxy"
 	"proxyblob/internal/socks5"
 	"testing"
@@ -248,9 +248,9 @@ func TestBindTimeoutSendsSecondFailureAndReleasesListener(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()
-	agent := socks.NewSocksHandler(context.Background(), b, socks.WithBindTimeout(100*time.Millisecond))
+	agent := tunnel.New(context.Background(), b, tunnel.WithBindTimeout(100*time.Millisecond))
 	defer agent.Stop()
-	agent.Start("")
+	agent.Start()
 	s := proxy.NewProxyServer(context.Background(), a)
 	defer s.Stop()
 	s.Start("127.0.0.1:0")

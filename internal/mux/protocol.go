@@ -20,15 +20,13 @@ const MaxPacketDataSize = 1 << 20
 
 // Command types for protocol operations.
 const (
-	CmdNew          byte = iota + 1 // Request new connection
-	CmdAck                          // Acknowledge connection
-	CmdData                         // Transfer data
-	CmdClose                        // Terminate connection
-	CmdEOF                          // End only the sender's data direction (coordinated rollout)
-	CmdCredit                       // Cumulative bytes consumed from the receive reservation
-	CmdUDPAssociate                 // Agent requests a proxy-local UDP relay
-	CmdUDPReady                     // Proxy returns SOCKS address
-	CmdDatagram                     // Complete SOCKS UDP datagram, separate from TCP credit
+	CmdNew      byte = iota + 1 // Request new connection
+	CmdAck                      // Acknowledge connection
+	CmdData                     // Transfer data
+	CmdClose                    // Terminate connection
+	CmdEOF                      // End only the sender's data direction (coordinated rollout)
+	CmdCredit                   // Cumulative bytes consumed from the receive reservation
+	CmdDatagram                 // One whole datagram, outside TCP credit
 )
 
 // Protocol packet field sizes in bytes.

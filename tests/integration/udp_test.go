@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	socks "proxyblob/internal/agent"
+	tunnel "proxyblob/internal/agent"
 	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
 	"proxyblob/internal/socks5"
@@ -18,9 +18,9 @@ import (
 
 func TestUDPAssociateUsesProxyEndpoint(t *testing.T) {
 	a, b := net.Pipe()
-	agent := socks.NewSocksHandler(context.Background(), b)
+	agent := tunnel.New(context.Background(), b)
 	proxy := proxy.NewProxyServer(context.Background(), a)
-	agent.Start("")
+	agent.Start()
 	proxy.Start("127.0.0.1:0")
 	defer agent.Stop()
 	defer proxy.Stop()
@@ -84,12 +84,12 @@ func TestUDPAssociateUsesProxyEndpoint(t *testing.T) {
 	}
 }
 
-func udpTunnel(t *testing.T, listen string) (*proxy.ProxyServer, *socks.SocksHandler) {
+func udpTunnel(t *testing.T, listen string) (*proxy.ProxyServer, *tunnel.Agent) {
 	t.Helper()
 	a, b := net.Pipe()
-	agent := socks.NewSocksHandler(context.Background(), b)
+	agent := tunnel.New(context.Background(), b)
 	proxy := proxy.NewProxyServer(context.Background(), a)
-	agent.Start("")
+	agent.Start()
 	proxy.Start(listen)
 	if proxy.ListenerAddr() == nil {
 		t.Fatal("proxy did not listen")
@@ -298,7 +298,7 @@ func TestUDPFiniteDestinationAndAssociationLimits(t *testing.T) {
 	cfg := mux.DefaultFlowConfig()
 	cfg.MaxStreams = 2
 	cfg.UDPDestinations = 2
-	agent, err := socks.NewSocksHandlerWithConfig(context.Background(), b, cfg)
+	agent, err := tunnel.NewWithConfig(context.Background(), b, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestUDPFiniteDestinationAndAssociationLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent.Start("")
+	agent.Start()
 	proxy.Start("127.0.0.1:0")
 	defer agent.Stop()
 	defer proxy.Stop()

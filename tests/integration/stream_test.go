@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	socks "proxyblob/internal/agent"
+	tunnel "proxyblob/internal/agent"
 	"proxyblob/internal/diag"
 	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
@@ -27,9 +27,13 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 			defer local.Close()
 			defer peer.Close()
 			var base *mux.BaseHandler
-			var handler mux.PacketHandler
+			var handler interface {
+				Stop()
+				OnData(uuid.UUID, []byte) byte
+				OnClose(uuid.UUID, byte) byte
+			}
 			if agent {
-				h := socks.NewSocksHandler(context.Background(), local)
+				h := tunnel.New(context.Background(), local)
 				base = h.BaseHandler
 				handler = h
 			} else {
@@ -112,12 +116,12 @@ func exerciseHalfCloseRequestResponse(t *testing.T, a, b net.Conn, cfg mux.FlowC
 		t.Fatal(err)
 	}
 	defer s.Stop()
-	h, err := socks.NewSocksHandlerWithConfig(context.Background(), b, cfg)
+	h, err := tunnel.NewWithConfig(context.Background(), b, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Stop()
-	h.Start("")
+	h.Start()
 	s.Start("127.0.0.1:0")
 	client, err := net.Dial("tcp", s.ListenerAddr().String())
 	if err != nil {
