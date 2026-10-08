@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/jedib0t/go-pretty/table"
 	"time"
+
+	"github.com/jedib0t/go-pretty/table"
 )
 
 // RenderListenerTable formats listener information into a human-readable table.

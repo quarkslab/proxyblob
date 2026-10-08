@@ -1,8 +1,9 @@
 package main
 
 import (
-	"github.com/rs/zerolog"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 func TestResolveLogLevel(t *testing.T) {

@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
-	"fmt"
-	"io"
 	"net"
+	"proxyblob/internal/bootstrap"
 	proxy "proxyblob/internal/proxy"
 	"proxyblob/pkg/protocol"
 	"sync"
@@ -95,7 +93,7 @@ func acceptAgentLoop(ctx context.Context, listenerID string, state *ListenerStat
 		// Cancellation closes even a connection still reading its identity.
 		cancelRead := context.AfterFunc(ctx, func() { conn.Close() })
 		conn.SetReadDeadline(time.Now().Add(identityTimeout))
-		info, err := readAgentIdentity(conn)
+		info, err := bootstrap.ReadIdentity(conn)
 		if !cancelRead() || err != nil {
 			conn.Close()
 			continue
@@ -131,33 +129,6 @@ func acceptAgentLoop(ctx context.Context, listenerID string, state *ListenerStat
 		agent.server.StartReceiving()
 		go monitorAgent(agent)
 	}
-}
-
-// maxIdentityLen bounds the identity payload the proxy is willing to accept.
-// Must match MaxIdentityLen in cmd/agent/main.go.
-const maxIdentityLen = 512
-
-// readAgentIdentity reads one length-prefixed identity frame from conn:
-// a 2-byte big-endian length followed by exactly that many bytes.
-// It uses io.ReadFull for both reads so a short read is reported as an error
-// instead of silently leaving identity bytes in the stream.
-func readAgentIdentity(conn net.Conn) (string, error) {
-	var lenBuf [2]byte
-	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
-		return "", fmt.Errorf("read identity length: %w", err)
-	}
-
-	length := binary.BigEndian.Uint16(lenBuf[:])
-	if length == 0 || int(length) > maxIdentityLen {
-		return "", fmt.Errorf("identity length %d out of range (1-%d)", length, maxIdentityLen)
-	}
-
-	buf := make([]byte, length)
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		return "", fmt.Errorf("read identity payload (%d bytes): %w", length, err)
-	}
-
-	return string(buf), nil
 }
 
 // monitorAgent follows the actual session receiver, not listener or CLI activity.

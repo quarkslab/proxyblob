@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/internal/bootstrap"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -260,12 +261,12 @@ func TestIdentityTimeout(t *testing.T) {
 	}
 }
 func TestTwoListenersShareAccount(t *testing.T) {
-	a, b := bootstrapEndpoints("one")
-	c, d := bootstrapEndpoints("two")
+	a, b := bootstrap.Endpoints("one")
+	c, d := bootstrap.Endpoints("two")
 	if a == c || b == d || a == b {
 		t.Fatal("bootstrap collision")
 	}
-	a2, b2 := bootstrapEndpoints("one")
+	a2, b2 := bootstrap.Endpoints("one")
 	if a != a2 || b != b2 {
 		t.Fatal("namespace changed on restart")
 	}

@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/url"
+	"proxyblob/internal/bootstrap"
 	"sync"
 	"time"
 
@@ -62,7 +62,7 @@ func StartListener(listenerID string) error {
 
 	// Keep aznet polling defaults; retry policy here applies only to failures.
 	ctx, cancel := context.WithCancel(context.Background())
-	handshake, token := bootstrapEndpoints(listenerID)
+	handshake, token := bootstrap.Endpoints(listenerID)
 	sessionDuration, _ := listenerConfig.sessionDuration() // validated above
 	l, err := listenAzure(listenerConfig.Driver, listenAddr, aznet.WithContext(ctx), aznet.WithEndpoints(handshake, token), aznet.WithSessionDuration(sessionDuration))
 	if err != nil {
@@ -132,25 +132,8 @@ func GenerateConnectionString(listenerID string, expiry time.Duration) (string, 
 		return "", err
 	}
 
-	// Carry the configured namespace to Dial; aznet does not infer endpoint
-	// names from the credential query keys.
-	u, err := url.Parse(connStr)
-	if err != nil {
-		return "", err
-	}
-	handshake, token := bootstrapEndpoints(listenerID)
-	q := u.Query()
-	q.Set("proxyblob-handshake", handshake)
-	q.Set("proxyblob-token", token)
-	u.RawQuery = q.Encode()
-	connStr = u.String()
-
-	// Prepend the driver name so the agent knows which network to use for aznet.Dial
-	// Format: driver|connection_string
-	fullConnStr := state.Config.Driver + "|" + connStr
-
-	// Base64 encode the connection string to match expected format
-	return base64.RawStdEncoding.EncodeToString([]byte(fullConnStr)), nil
+	handshake, token := bootstrap.Endpoints(listenerID)
+	return bootstrap.Encode(state.Config.Driver, connStr, handshake, token)
 }
 
 // ListenerInfo tracks listener metadata for display.

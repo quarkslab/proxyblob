@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -131,14 +129,6 @@ func (a *AgentConnection) close() error {
 		connectedAgents.CompareAndDelete(a.ID, a)
 	})
 	return a.closeErr
-}
-
-// Lowercase alphanumeric names work for Blob, Queue and Table. Hash the exact
-// configured name so punctuation/case normalization cannot alias listeners.
-func bootstrapEndpoints(name string) (string, string) {
-	hash := sha256.Sum256([]byte(name))
-	suffix := fmt.Sprintf("%x", hash[:20])
-	return "pbh" + suffix, "pbt" + suffix
 }
 func retryAccept(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {

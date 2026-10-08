@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"proxyblob/internal/bootstrap"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -110,7 +111,7 @@ func TestAznetBootstrapOwnershipAndNamespaces(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := u.Query()
-		h, token := bootstrapEndpoints(lc.Name)
+		h, token := bootstrap.Endpoints(lc.Name)
 		if q.Get(h) == "" || q.Get(token) == "" || q.Get("proxyblob-handshake") != h || q.Get("proxyblob-token") != token {
 			t.Fatal("credential lost namespace")
 		}
@@ -163,9 +164,9 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 					listeners.Delete(id)
 				}()
 				var firstExpiry time.Time
-				for _, bootstrap := range []time.Duration{time.Hour, 7 * 24 * time.Hour} {
+				for _, bootstrapExpiry := range []time.Duration{time.Hour, 7 * 24 * time.Hour} {
 					before := time.Now().Truncate(time.Second)
-					credential, err := GenerateConnectionString(id, bootstrap)
+					credential, err := GenerateConnectionString(id, bootstrapExpiry)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -178,7 +179,7 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 					if err != nil {
 						t.Fatal("parse bootstrap")
 					}
-					handshake, token := bootstrapEndpoints(id)
+					handshake, token := bootstrap.Endpoints(id)
 					// Inspect only signed expiry; never print credentials or signatures.
 					for _, name := range []string{handshake, token} {
 						raw, err := base64.URLEncoding.DecodeString(u.Query().Get(name))
@@ -193,7 +194,7 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 						if err != nil {
 							t.Fatal("parse expiry")
 						}
-						if expires.Before(before.Add(bootstrap)) || expires.After(time.Now().Add(bootstrap)) {
+						if expires.Before(before.Add(bootstrapExpiry)) || expires.After(time.Now().Add(bootstrapExpiry)) {
 							t.Fatal("bootstrap duration not honored")
 						}
 					}
