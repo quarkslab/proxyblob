@@ -35,7 +35,7 @@ func (h *BaseHandler) signalWriter() {
 }
 
 func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan struct{}, confirmed bool, progress ...*atomic.Int64) (chan error, error) {
-	limit := 12
+	limit := 16 // largest control payload: CREDIT
 	switch cmd {
 	case CmdData:
 		limit = h.flow.DataFrame
@@ -160,8 +160,9 @@ func (h *BaseHandler) discardData(id uuid.UUID) {
 }
 
 // Credit has one coalescing slot per stream, never an unbounded goroutine or
-// a blocking send from the shared receiver/application reader.
-func (h *BaseHandler) queueCredit(id uuid.UUID, consumed uint64) {
+// a blocking send from the shared receiver/application reader. It carries the
+// cumulative bytes consumed and the receiver's current window.
+func (h *BaseHandler) queueCredit(id uuid.UUID, consumed uint64, window int) {
 	h.queueMu.Lock()
 	defer h.queueMu.Unlock()
 	select {
@@ -171,8 +172,9 @@ func (h *BaseHandler) queueCredit(id uuid.UUID, consumed uint64) {
 		return
 	default:
 	}
-	b := make([]byte, 8)
+	b := make([]byte, 16)
 	binary.BigEndian.PutUint64(b, consumed)
+	binary.BigEndian.PutUint64(b[8:], uint64(window))
 	if req := h.credits[id]; req != nil {
 		req.data = NewPacket(CmdCredit, id, b).Encode()
 		return

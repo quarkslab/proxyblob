@@ -260,9 +260,7 @@ func TestFlowCreditValidation(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, v := range tc.values {
-					data := make([]byte, 8)
-					binary.BigEndian.PutUint64(data, v)
-					b.sendPacket(CmdCredit, x.id, data)
+					b.sendPacket(CmdCredit, x.id, creditPayload(v, 32))
 				}
 				synctest.Wait()
 				select {
@@ -281,6 +279,36 @@ func TestFlowCreditValidation(t *testing.T) {
 					x.owner.creditMu.Unlock()
 					if credit != 32 {
 						t.Fatalf("duplicate credit inflated allowance: %d", credit)
+					}
+				}
+			})
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		window uint64
+		valid  bool
+	}{{"grown window", 64, true}, {"shrinking window", 16, false}, {"oversized window", MaxWindow + 1, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, b := flowPair(t, tinyFlow())
+				x, _ := openFlow(t, a, b)
+				b.sendPacket(CmdCredit, x.id, creditPayload(0, tc.window))
+				synctest.Wait()
+				select {
+				case <-x.closed:
+					if tc.valid {
+						t.Fatal("valid window rejected")
+					}
+				default:
+					if !tc.valid {
+						t.Fatal("invalid window accepted")
+					}
+					x.owner.creditMu.Lock()
+					window := x.owner.peerWindow
+					x.owner.creditMu.Unlock()
+					if window != tc.window {
+						t.Fatalf("window %d, want %d", window, tc.window)
 					}
 				}
 			})
@@ -406,7 +434,7 @@ func TestFlowCoalescesCreditAndBoundsControlCapacity(t *testing.T) {
 		synctest.Wait()
 		id := uuid.New()
 		for i := uint64(1); i <= 10000; i++ {
-			h.queueCredit(id, i)
+			h.queueCredit(id, i, 32)
 		}
 		h.queueMu.Lock()
 		count := len(h.controls)
@@ -650,4 +678,11 @@ func TestFlowDefaultFrameDoesNotSplitCopyBuffer(t *testing.T) {
 			t.Fatalf("one copy buffer required %d transport writes", writes)
 		}
 	})
+}
+
+func creditPayload(consumed, window uint64) []byte {
+	b := make([]byte, 16)
+	binary.BigEndian.PutUint64(b, consumed)
+	binary.BigEndian.PutUint64(b[8:], window)
+	return b
 }

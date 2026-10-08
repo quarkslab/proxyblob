@@ -27,8 +27,11 @@ type Connection struct {
 	closeOnce                      sync.Once
 	peerCloseOnce                  sync.Once
 	handler                        *BaseHandler
-	buffer                         []byte
+	buffer                         []byte // receive ring, grown on demand up to window
 	head, used                     int
+	window                         int    // receive window currently granted to the peer
+	maxUsed                        int    // largest backlog since growthEpoch
+	growthEpoch                    uint64 // consumed bytes when the window last grew or was judged
 	consumed, credited             uint64
 	changed                        chan struct{}
 	sendEnded                      bool
@@ -107,17 +110,19 @@ func (c *Connection) Close() byte {
 		c.buffer = nil
 		c.used = 0
 		h := c.handler
+		window := c.window
 		c.deliveryMu.Unlock()
 		if h != nil {
 			h.discardData(c.ID)
-			h.releaseReservation(c)
+			h.releaseReservation(window)
 		}
 	})
 	return diag.ErrNone
 }
 
-// Deliver copies into the one reserved receive ring. It never waits for the
-// application: data beyond the advertised window is a protocol violation.
+// Deliver copies into the stream's receive ring, growing it within the
+// advertised window. It never waits for the application: data beyond the
+// window is a protocol violation.
 func (c *Connection) Deliver(data []byte) bool {
 	c.deliveryMu.Lock()
 	defer c.deliveryMu.Unlock()
@@ -131,23 +136,44 @@ func (c *Connection) Deliver(data []byte) bool {
 		return false
 	default:
 	}
-	if c.buffer == nil {
-		c.buffer = make([]byte, DefaultFlowConfig().StreamWindow)
+	if c.window == 0 { // unregistered streams in tests
+		c.window = DefaultFlowConfig().StreamWindow
 	}
-	available := len(c.buffer) - c.used
+	available := c.window - c.used
 	if c.handler != nil {
 		available -= int(c.consumed - c.credited)
 	}
 	if len(data) > available {
 		return false
 	}
+	c.reserveRing(c.used + len(data))
 	tail := (c.head + c.used) % len(c.buffer)
 	n := copy(c.buffer[tail:], data)
 	copy(c.buffer, data[n:])
 	c.used += len(data)
+	c.maxUsed = max(c.maxUsed, c.used)
 	c.returnCredit()
 	c.notifyReader()
 	return true
+}
+
+// minRing is the first allocation of a stream's receive ring.
+const minRing = 64 << 10
+
+// reserveRing grows the ring, by doubling, to hold n bytes; the window bounds
+// it. Contents keep their order. Runs under deliveryMu.
+func (c *Connection) reserveRing(n int) {
+	if len(c.buffer) >= n {
+		return
+	}
+	size := max(len(c.buffer), min(minRing, c.window))
+	for size < n {
+		size *= 2
+	}
+	ring := make([]byte, min(size, c.window))
+	first := copy(ring, c.buffer[c.head:min(c.head+c.used, len(c.buffer))])
+	copy(ring[first:c.used], c.buffer)
+	c.buffer, c.head = ring, 0
 }
 
 func (c *Connection) notifyReader() { close(c.changed); c.changed = make(chan struct{}) }
@@ -235,9 +261,30 @@ func (c *Connection) returnCredit() {
 	if pending == 0 {
 		return
 	}
-	grantExhausted := uint64(len(c.buffer)-c.used) == pending
-	if pending >= uint64(max(len(c.buffer)/2, 1)) || grantExhausted {
+	grantExhausted := uint64(c.window-c.used) == pending
+	if pending >= uint64(max(c.window/2, 1)) || grantExhausted {
+		c.growWindow()
 		c.credited = c.consumed
-		c.handler.queueCredit(c.ID, c.consumed)
+		c.handler.queueCredit(c.ID, c.consumed, c.window)
 	}
+}
+
+// growWindow doubles the receive window, up to MaxStreamWindow and within the
+// tunnel budget, once a full window has been consumed while the backlog never
+// exceeded half of it: the reader keeps up, so the window is what limits the
+// transfer. Slow readers and small exchanges keep the initial window. Runs
+// under deliveryMu; the next credit announces the new window.
+func (c *Connection) growWindow() {
+	if c.consumed-c.growthEpoch < uint64(c.window) {
+		return
+	}
+	limit := c.handler.flow.MaxStreamWindow
+	if c.maxUsed <= c.window/2 && c.window < limit {
+		delta := min(c.window, limit-c.window)
+		if c.handler.growReservation(delta) {
+			c.window += delta
+		}
+	}
+	c.growthEpoch = c.consumed
+	c.maxUsed = c.used
 }
