@@ -9,7 +9,6 @@ import (
 	"proxyblob/internal/diag"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -47,13 +46,10 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 		return nil, diag.ErrMalformedPacket
 	}
 
-	if len(data)+HeaderSize > h.flow.BatchBytes && cmd != CmdDatagram {
-		return nil, diag.ErrMalformedPacket
-	}
 	h.queueMu.Lock()
 	defer h.queueMu.Unlock()
 	for cmd == CmdData || cmd == CmdDatagram {
-		if cmd == CmdDatagram && (len(data) > h.flow.StreamWindow || len(data)+HeaderSize > h.flow.BatchBytes) {
+		if cmd == CmdDatagram && len(data) > h.flow.StreamWindow {
 			return nil, diag.ErrDatagramDropped
 		}
 		pending := h.pendingData[id]
@@ -281,51 +277,10 @@ func (h *BaseHandler) writeLoop() {
 	controlRun := 0
 	for {
 		h.queueMu.Lock()
-		batch := make([]*writeRequest, 0, 16)
-		// Do not allocate a full bulk batch for an idle wake or tiny control.
-		queuedBytes := min(h.flow.BatchBytes, h.dataBytes) + h.dataRecords*HeaderSize + len(h.controls)*(HeaderSize+12)
-		buf := make([]byte, 0, min(h.flow.BatchBytes, queuedBytes))
-		started := time.Now()
-		for len(h.controls)+len(h.data) > 0 && (len(batch) == 0 || time.Since(started) < time.Millisecond) {
-			control := len(h.controls) > 0 && (controlRun < 8 || len(h.data) == 0)
-			var req *writeRequest
-			if control {
-				req = h.controls[0]
-			} else {
-				req = h.data[h.dataReady[0]][0]
-			}
-			if len(buf)+len(req.data) > h.flow.BatchBytes {
-				break
-			}
-			if control {
-				h.controls[0] = nil
-				h.controls = h.controls[1:]
-			} else {
-				queue := h.data[req.id]
-				queue[0] = nil
-				queue = queue[1:]
-				h.dataReady = h.dataReady[1:]
-				if len(queue) == 0 {
-					delete(h.data, req.id)
-				} else {
-					h.data[req.id] = queue
-					h.dataReady = append(h.dataReady, req.id)
-				}
-			}
-			if req.credit {
-				delete(h.credits, req.id)
-			}
-			if control {
-				controlRun++
-			} else {
-				controlRun = 0
-			}
-			batch = append(batch, req)
-			buf = append(buf, req.data...)
-		}
+		req := h.nextRequest(&controlRun)
 		empty := len(h.controls)+len(h.data) == 0
 		h.queueMu.Unlock()
-		if len(batch) == 0 {
+		if req == nil {
 			if empty {
 				select {
 				case <-h.draining:
@@ -342,32 +297,32 @@ func (h *BaseHandler) writeLoop() {
 				continue
 			}
 		}
-		err := writeAll(h.conn, buf)
+		// One record per write: the transport (aznet) coalesces queued writes
+		// into storage requests itself, so batching here would only add a copy.
+		err := writeAll(h.conn, req.data)
 		if err != nil {
 			h.writeErrMu.Lock()
 			h.writeErr = err
 			h.writeErrMu.Unlock()
 		}
 		h.queueMu.Lock()
-		for _, req := range batch {
-			if req.isData {
-				pending := h.pendingData[req.id]
-				pending.bytes -= req.payload
-				pending.records--
-				if pending.records == 0 {
-					delete(h.pendingData, req.id)
-				} else {
-					h.pendingData[req.id] = pending
-				}
-				h.dataBytes -= req.payload
-				h.dataRecords--
-				if err == nil && req.progress != nil {
-					req.progress.Add(int64(req.payload))
-				}
+		if req.isData {
+			pending := h.pendingData[req.id]
+			pending.bytes -= req.payload
+			pending.records--
+			if pending.records == 0 {
+				delete(h.pendingData, req.id)
+			} else {
+				h.pendingData[req.id] = pending
 			}
-			if req.done != nil {
-				req.done <- err
+			h.dataBytes -= req.payload
+			h.dataRecords--
+			if err == nil && req.progress != nil {
+				req.progress.Add(int64(req.payload))
 			}
+		}
+		if req.done != nil {
+			req.done <- err
 		}
 		close(h.dataSpace)
 		h.dataSpace = make(chan struct{})
@@ -382,6 +337,41 @@ func (h *BaseHandler) writeLoop() {
 		default:
 		}
 	}
+}
+
+// nextRequest dequeues the next record under queueMu: controls first, but
+// after eight consecutive controls a waiting data record goes next; data
+// streams take turns. It returns nil when nothing is queued.
+func (h *BaseHandler) nextRequest(controlRun *int) *writeRequest {
+	if len(h.controls)+len(h.data) == 0 {
+		return nil
+	}
+	control := len(h.controls) > 0 && (*controlRun < 8 || len(h.data) == 0)
+	var req *writeRequest
+	if control {
+		req = h.controls[0]
+		h.controls[0] = nil
+		h.controls = h.controls[1:]
+		*controlRun++
+	} else {
+		id := h.dataReady[0]
+		queue := h.data[id]
+		req = queue[0]
+		queue[0] = nil
+		queue = queue[1:]
+		h.dataReady = h.dataReady[1:]
+		if len(queue) == 0 {
+			delete(h.data, id)
+		} else {
+			h.data[id] = queue
+			h.dataReady = append(h.dataReady, id)
+		}
+		*controlRun = 0
+	}
+	if req.credit {
+		delete(h.credits, req.id)
+	}
+	return req
 }
 
 // Drain stops accepting writes and waits for every admitted record to reach

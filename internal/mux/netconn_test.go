@@ -180,17 +180,16 @@ func (c *delayedWriteConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
-// Compare batching under a fixed request cost, separately from local CPU/heap
-// measurements. The count is transport writes, not billed Azure transactions.
+// Count transport writes under a fixed request cost, separately from local
+// CPU/heap measurements. The count is writes, not billed Azure transactions.
 func TestFlowStorageLatency(t *testing.T) {
 	if os.Getenv("PROXYBLOB_MEASURE_LATENCY") == "" {
 		t.Skip("opt-in transport request-cost comparison")
 	}
-	for _, batch := range []int{64 << 10, 128 << 10, 512 << 10} {
-		for _, concurrency := range []int{1, 16} {
-			t.Run(fmt.Sprintf("batch%d/streams%d", batch, concurrency), func(t *testing.T) {
+	for _, concurrency := range []int{1, 16} {
+		{
+			t.Run(fmt.Sprintf("streams%d", concurrency), func(t *testing.T) {
 				cfg := DefaultFlowConfig()
-				cfg.BatchBytes = batch
 				rawA, rawB := net.Pipe()
 				aWire, bWire := &delayedWriteConn{Conn: rawA, delay: 10 * time.Millisecond}, &delayedWriteConn{Conn: rawB, delay: 10 * time.Millisecond}
 				a, b := flowPairOn(t, cfg, aWire, bWire)
@@ -223,7 +222,7 @@ func TestFlowStorageLatency(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				t.Logf("batch=%d streams=%d bytes=%d elapsed=%v transport_writes=%d", batch, concurrency, concurrency*(256<<10), time.Since(start), aWire.writes.Load()+bWire.writes.Load()-before)
+				t.Logf("streams=%d bytes=%d elapsed=%v transport_writes=%d", concurrency, concurrency*(256<<10), time.Since(start), aWire.writes.Load()+bWire.writes.Load()-before)
 			})
 		}
 	}

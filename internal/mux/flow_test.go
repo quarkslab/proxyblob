@@ -109,7 +109,6 @@ func tinyFlow() FlowConfig {
 	cfg.TunnelWindow = 128
 	cfg.MaxStreams = 4
 	cfg.DataFrame = 8
-	cfg.BatchBytes = 64
 	cfg.ControlSlots = 16
 	return cfg
 }
@@ -340,7 +339,7 @@ func (c *batchConn) Write(p []byte) (int, error) {
 	c.mu.Unlock()
 	return c.shortConn.Write(p)
 }
-func TestFlowBoundedBatchesAndFairControl(t *testing.T) {
+func TestFlowOneRecordPerWriteAndFairControl(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		wire := &batchConn{shortConn: shortConn{limit: 1 << 20}, gate: make(chan struct{})}
 		cfg := tinyFlow()
@@ -368,8 +367,8 @@ func TestFlowBoundedBatchesAndFairControl(t *testing.T) {
 		wire.mu.Lock()
 		defer wire.mu.Unlock()
 		for _, n := range wire.sizes {
-			if n > cfg.BatchBytes {
-				t.Fatalf("unbounded batch %d", n)
+			if n > HeaderSize+max(cfg.DataFrame, 12) {
+				t.Fatalf("write of %d bytes holds more than one record", n)
 			}
 		}
 		buf := wire.wire.Bytes()
@@ -461,7 +460,7 @@ func TestFlowConfiguration(t *testing.T) {
 	for _, edit := range []func(*FlowConfig){
 		func(c *FlowConfig) { c.StreamWindow = 0 }, func(c *FlowConfig) { c.TunnelWindow = 1 },
 		func(c *FlowConfig) { c.MaxStreams = 0 }, func(c *FlowConfig) { c.DataFrame = 0 },
-		func(c *FlowConfig) { c.BatchBytes = 1 }, func(c *FlowConfig) { c.ControlSlots = 1 }, func(c *FlowConfig) { c.DrainTimeout = 0 },
+		func(c *FlowConfig) { c.ControlSlots = 1 }, func(c *FlowConfig) { c.DrainTimeout = 0 },
 	} {
 		cfg := DefaultFlowConfig()
 		edit(&cfg)
@@ -562,8 +561,8 @@ func TestFlowSustainedProducersKeepHealthyControlMoving(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if maximum := wire.maximum.Load(); maximum > int64(cfg.BatchBytes) {
-			t.Fatalf("sustained batch exceeded limit: %d", maximum)
+		if maximum := wire.maximum.Load(); maximum > int64(HeaderSize+max(cfg.DataFrame, 12)) {
+			t.Fatalf("sustained write exceeded one record: %d", maximum)
 		}
 	})
 }

@@ -20,7 +20,6 @@ type FlowConfig struct {
 	TunnelWindow    int
 	MaxStreams      int
 	DataFrame       int
-	BatchBytes      int
 	ControlSlots    int
 	DrainTimeout    time.Duration
 	UDPQueueBytes   int
@@ -32,7 +31,7 @@ func DefaultFlowConfig() FlowConfig {
 	return FlowConfig{
 		StreamWindow: 512 << 10, TunnelWindow: 64 << 20, MaxStreams: 128,
 		UDPQueueBytes: DatagramQueueBytes, UDPQueuePackets: DatagramQueuePackets, UDPDestinations: 64,
-		DataFrame: 32 << 10, BatchBytes: 512 << 10, ControlSlots: 512, DrainTimeout: DrainTimeout,
+		DataFrame: 32 << 10, ControlSlots: 512, DrainTimeout: DrainTimeout,
 	}
 }
 
@@ -41,7 +40,6 @@ func (c FlowConfig) validate() error {
 		c.TunnelWindow < c.StreamWindow ||
 		c.MaxStreams < 1 || c.MaxStreams > 65536 ||
 		c.DataFrame < 1 || c.DataFrame > MaxPacketDataSize ||
-		c.BatchBytes < max(c.DataFrame, 12)+HeaderSize || c.BatchBytes > 16<<20 ||
 		c.ControlSlots < 4*c.MaxStreams || c.ControlSlots > 1<<20 ||
 		c.DrainTimeout <= 0 || c.UDPQueueBytes < 1 || c.UDPQueueBytes > 16<<20 || c.UDPQueuePackets < 1 || c.UDPQueuePackets > 4096 || c.UDPDestinations < 1 || c.UDPDestinations > 4096 {
 		return diag.ErrInvalidFlowConfig
@@ -193,7 +191,6 @@ func FlowConfigFromEnv() (FlowConfig, error) {
 		"PROXYBLOB_TUNNEL_WINDOW":     &c.TunnelWindow,
 		"PROXYBLOB_MAX_STREAMS":       &c.MaxStreams,
 		"PROXYBLOB_DATA_FRAME":        &c.DataFrame,
-		"PROXYBLOB_BATCH_BYTES":       &c.BatchBytes,
 		"PROXYBLOB_CONTROL_SLOTS":     &c.ControlSlots,
 		"PROXYBLOB_UDP_QUEUE_BYTES":   &c.UDPQueueBytes,
 		"PROXYBLOB_UDP_QUEUE_PACKETS": &c.UDPQueuePackets,
