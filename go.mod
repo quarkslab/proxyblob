@@ -3,7 +3,7 @@ module proxyblob
 go 1.25.0
 
 require (
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0
 	github.com/Azure/azure-sdk-for-go/sdk/data/aztables v1.4.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.1-beta.1.0.20260803061759-b14dfcfec94a // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azqueue v1.0.1 // indirect
@@ -42,7 +42,9 @@ require (
 )
 
 require (
-	github.com/atsika/aznet v0.0.0-20261006132211-7abcd80a7a28
+	github.com/atsika/aznet v0.0.0-20261008235412-95905abd0435
+	github.com/hashicorp/yamux v0.1.2
 	github.com/jedib0t/go-pretty v4.3.0+incompatible
 	github.com/rs/zerolog v1.35.1
+	github.com/xtaci/smux v1.5.57
 )

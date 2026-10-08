@@ -7,9 +7,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"proxyblob/pkg/protocol"
-	proxy "proxyblob/pkg/proxy/server"
-	socks "proxyblob/pkg/proxy/socks"
+	tunnel "proxyblob/internal/agent"
+	"proxyblob/internal/mux"
+	proxy "proxyblob/internal/proxy"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -87,7 +87,7 @@ func TestStorageFixedTransfer(t *testing.T) {
 
 	defer a.Close()
 	defer b.Close()
-	cfg, err := protocol.FlowConfigFromEnv()
+	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +96,12 @@ func TestStorageFixedTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Stop()
-	h, err := socks.NewSocksHandlerWithConfig(context.Background(), b, cfg)
+	h, err := tunnel.NewWithConfig(context.Background(), b, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Stop()
-	h.Start("")
+	h.Start()
 	s.Start("127.0.0.1:0")
 	client, err := net.Dial("tcp", s.ListenerAddr().String())
 	if err != nil {
@@ -166,7 +166,7 @@ func TestStorageLatencyTransfer(t *testing.T) {
 	if err != nil || ms < 0 || ms > 250 {
 		t.Fatal("latency must be 0..250 ms")
 	}
-	cfg, err := protocol.FlowConfigFromEnv()
+	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,11 +24,8 @@ try {
   console.log(
     `Runtime: ${process.execPath} Bun ${Bun.version}; ${await command(["go", "version"])}; GOROOT=${goroot}`,
   );
-  const wasm = join(output, "socks.test.wasm");
-  await command(
-    ["go", "test", "-mod=readonly", "-c", "-o", wasm, "./pkg/proxy/socks"],
-    { ...process.env, GOOS: "js", GOARCH: "wasm" },
-  );
+  // Each package's wasm tests run in turn on one host; leaks are checked after each.
+  const packages = ["./internal/agent/netenv", "./internal/agent"];
   const require = createRequire(import.meta.url);
   Object.assign(globalThis, { require, fs: require("node:fs") });
   await import(join(goroot, "lib/wasm/wasm_exec.js"));
@@ -38,29 +35,39 @@ try {
     ProxyBlobTestPeers: peers.ports,
     ProxyBlobHostStats: () => ({ ...stats }),
   });
-  // The Go constructor is installed by Go's unmodified runtime shim.
-  const go = new (globalThis as any).Go();
-  go.argv = [wasm, "-test.v", "-test.timeout=40s", ...process.argv.slice(2)];
-  go.env = process.env;
-  let exitCode = 0;
-  go.exit = (code: number) => {
-    exitCode = code;
-  };
   const watchdog = setTimeout(() => {
     console.error("WASM host watchdog expired");
     process.exit(1);
-  }, 60_000);
+  }, 60_000 * packages.length);
   try {
-    const result = await WebAssembly.instantiate(
-      await readFile(wasm),
-      go.importObject,
-    );
-    await go.run(result.instance);
-    for (let i = 0; stats.sockets && i < 100; i++) await Bun.sleep(10);
-    if (stats.active || stats.callbacks || stats.sockets)
-      throw new Error(`host resources leaked: ${JSON.stringify(stats)}`);
-    console.log("Host resource/queue counters:", JSON.stringify(stats));
-    process.exitCode = exitCode;
+    for (const [index, pkg] of packages.entries()) {
+      const wasm = join(output, `test${index}.wasm`);
+      await command(
+        ["go", "test", "-mod=readonly", "-c", "-o", wasm, pkg],
+        { ...process.env, GOOS: "js", GOARCH: "wasm" },
+      );
+      // The Go constructor is installed by Go's unmodified runtime shim.
+      const go = new (globalThis as any).Go();
+      go.argv = [wasm, "-test.v", "-test.timeout=40s", ...process.argv.slice(2)];
+      go.env = process.env;
+      let exitCode = 0;
+      go.exit = (code: number) => {
+        exitCode = code;
+      };
+      const result = await WebAssembly.instantiate(
+        await readFile(wasm),
+        go.importObject,
+      );
+      await go.run(result.instance);
+      for (let i = 0; stats.sockets && i < 100; i++) await Bun.sleep(10);
+      if (stats.active || stats.callbacks || stats.sockets)
+        throw new Error(`${pkg}: host resources leaked: ${JSON.stringify(stats)}`);
+      console.log(`${pkg}: host resource/queue counters:`, JSON.stringify(stats));
+      if (exitCode !== 0) {
+        process.exitCode = exitCode;
+        break;
+      }
+    }
   } finally {
     await peers.close();
     clearTimeout(watchdog);

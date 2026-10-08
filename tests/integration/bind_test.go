@@ -6,8 +6,9 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	proxy "proxyblob/pkg/proxy/server"
-	socks "proxyblob/pkg/proxy/socks"
+	tunnel "proxyblob/internal/agent"
+	proxy "proxyblob/internal/proxy"
+	"proxyblob/internal/socks5"
 	"testing"
 	"time"
 )
@@ -78,7 +79,7 @@ func TestBindRepliesAndHalfClose(t *testing.T) {
 		t.Run(host, func(t *testing.T) {
 			s, _ := udpTunnel(t, "127.0.0.1:0")
 			c := socksClient(t, s, []byte{5, 1, 0})
-			addr := socks.UDPAddress(&net.UDPAddr{IP: net.ParseIP(host)})
+			addr := socks5.UDPAddress(&net.UDPAddr{IP: net.ParseIP(host)})
 			if host == "localhost" {
 				addr = append([]byte{3, 9}, []byte(host)...)
 				addr = append(addr, 0, 0)
@@ -141,7 +142,7 @@ func TestConnectReplyUsesActualAddressFamily(t *testing.T) {
 			s, _ := udpTunnel(t, "127.0.0.1:0")
 			c := socksClient(t, s, []byte{5, 1, 0})
 			address := dst.Addr().(*net.TCPAddr)
-			socksCommand(t, c, 1, socks.UDPAddress(&net.UDPAddr{IP: address.IP, Port: address.Port}))
+			socksCommand(t, c, 1, socks5.UDPAddress(&net.UDPAddr{IP: address.IP, Port: address.Port}))
 			bound := socksReply(t, c, 0)
 			peer, err := dst.Accept()
 			if err != nil {
@@ -194,7 +195,7 @@ func TestBindRejectsUnexpectedPeerPort(t *testing.T) {
 	}
 	expected := reserve.Addr().(*net.TCPAddr)
 	defer reserve.Close()
-	socksCommand(t, c, 2, socks.UDPAddress(&net.UDPAddr{IP: expected.IP, Port: expected.Port}))
+	socksCommand(t, c, 2, socks5.UDPAddress(&net.UDPAddr{IP: expected.IP, Port: expected.Port}))
 	bound := socksReply(t, c, 0)
 	bad, err := net.DialTCP("tcp4", nil, bound)
 	if err != nil {
@@ -247,16 +248,16 @@ func TestBindTimeoutSendsSecondFailureAndReleasesListener(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()
-	agent := socks.NewSocksHandler(context.Background(), b, socks.WithBindTimeout(100*time.Millisecond))
+	agent := tunnel.New(context.Background(), b, tunnel.WithBindTimeout(100*time.Millisecond))
 	defer agent.Stop()
-	agent.Start("")
+	agent.Start()
 	s := proxy.NewProxyServer(context.Background(), a)
 	defer s.Stop()
 	s.Start("127.0.0.1:0")
 	c := socksClient(t, s, []byte{5, 1, 0})
 	socksCommand(t, c, 2, []byte{1, 127, 0, 0, 1, 0, 0})
 	bound := socksReply(t, c, 0)
-	socksReply(t, c, socks.TTLExpired)
+	socksReply(t, c, socks5.TTLExpired)
 	var buf [1]byte
 	if _, err := c.Read(buf[:]); err != io.EOF {
 		t.Fatalf("timeout EOF %v", err)

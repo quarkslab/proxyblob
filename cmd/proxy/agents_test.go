@@ -1,114 +1,35 @@
 package main
 
 import (
-	"context"
-	"encoding/binary"
 	"errors"
-	"io"
 	"net"
 	"os"
-	proxy "proxyblob/pkg/proxy/server"
-	"sync"
-	"sync/atomic"
 	"testing"
+	"time"
+
+	"proxyblob/internal/operator"
 
 	"github.com/atsika/aznet"
 	"github.com/desertbit/grumble"
 )
 
-// Keep the selected aznet's real handshake, framing, deadlines and Close path;
-// replace only the storage driver so no Azure credentials are needed.
-type removalDriver struct {
-	aznet.Driver
-	noise *aznet.Noise
-	token []byte
-	fin   atomic.Bool
+// oneConnListener hands out a single connection, then blocks until closed.
+type oneConnListener struct {
+	conn   chan net.Conn
+	closed chan struct{}
 }
 
-type removalFactory struct{ driver *removalDriver }
-
-func (f removalFactory) NewDriver(*aznet.Endpoint, *aznet.Config) (aznet.Driver, error) {
-	return f.driver, nil
-}
-
-func (d *removalDriver) PostHandshake(_ context.Context, _ string, msg []byte) error {
-	var err error
-	d.noise, err = aznet.NewNoiseServer()
-	if err != nil {
-		return err
-	}
-	if _, err = d.noise.ReadMessage(msg); err != nil {
-		return err
-	}
-	d.token, err = d.noise.WriteMessage([]byte(`{"req":"r","res":"s"}`))
-	return err
-}
-
-func (d *removalDriver) GetToken(context.Context, string) ([]byte, error) { return d.token, nil }
-
-func (d *removalDriver) NewTransport(context.Context, string, aznet.SessionTokens, bool) (aznet.Transport, error) {
-	return &removalTransport{driver: d}, nil
-}
-
-type removalTransport struct{ driver *removalDriver }
-
-func (tr *removalTransport) WriteRaw(ctx context.Context, _ uint64, r io.ReadSeeker) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	plain, _, err := tr.driver.noise.UnsealData(nil, raw, 1024*1024)
-	if err != nil {
-		return err
-	}
-	for len(plain) >= 5 {
-		if plain[4] == aznet.MsgTypeFin {
-			tr.driver.fin.Store(true)
-		}
-		plain = plain[5+int(binary.BigEndian.Uint32(plain)):]
-	}
-	return nil
-}
-
-func (*removalTransport) ReadRaw(ctx context.Context) (io.ReadCloser, error) {
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-func (*removalTransport) Close() error { return nil }
-
-func (*removalTransport) LocalAddr() net.Addr { return nil }
-
-func (*removalTransport) RemoteAddr() net.Addr { return nil }
-
-func (*removalTransport) MaxRawSize() int { return 1024 * 1024 }
-
-func TestRemoveAgentAznetSendsFin(t *testing.T) {
-	d := &removalDriver{}
-	aznet.RegisterFactory("removaltest", removalFactory{d})
-	defer aznet.UnregisterFactory("removaltest")
-	conn, err := aznet.Dial("removaltest", "http://example.invalid", aznet.WithPing(0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent := &AgentConnection{ID: "removal-fin", Conn: conn, server: proxy.NewProxyServer(context.Background(), conn)}
-	agent.server.StartReceiving()
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Go(func() {
-			if err := agent.close(); err != nil {
-				t.Errorf("agent removal: %v", err)
-			}
-		})
-	}
-	wg.Wait()
-	if !d.fin.Load() {
-		t.Error("remote transport received no FIN")
+func (l *oneConnListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conn:
+		return c, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
 	}
 }
+func (l *oneConnListener) Close() error                    { close(l.closed); return nil }
+func (*oneConnListener) Addr() net.Addr                    { return nil }
+func (*oneConnListener) ConnectionString() (string, error) { return "test", nil }
 
 type failedCloseConn struct{ net.Conn }
 
@@ -117,10 +38,28 @@ func (c failedCloseConn) Close() error { c.Conn.Close(); return os.ErrDeadlineEx
 func TestRemoveAgentClearsSelectionOnCleanupFailure(t *testing.T) {
 	c, peer := net.Pipe()
 	defer peer.Close()
-	const id = "removal-cleanup-failure"
-	agent := &AgentConnection{ID: id, Conn: failedCloseConn{c}}
-	connectedAgents.Store(id, agent)
-	defer connectedAgents.Delete(id)
+	l := &oneConnListener{conn: make(chan net.Conn, 1), closed: make(chan struct{})}
+	l.conn <- failedCloseConn{c}
+	oldOp := op
+	op = operator.New([]operator.ListenerConfig{{Name: "removal", Driver: "fake", Address: "https://example.invalid", StorageAccountName: "account", StorageAccountKey: "key"}},
+		operator.WithListen(func(string, string, ...aznet.Option) (net.Listener, error) { return l, nil }))
+	defer func() { op = oldOp }()
+	if err := op.StartListener("removal"); err != nil {
+		t.Fatal(err)
+	}
+	defer op.StopListener("removal")
+	if _, err := peer.Write([]byte{0, 1, 'x'}); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	for deadline := time.Now().Add(3 * time.Second); id == "" && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if ids := op.AgentIDs(); len(ids) == 1 {
+			id = ids[0]
+		}
+	}
+	if id == "" {
+		t.Fatal("agent did not connect")
+	}
 	old := selectedAgent
 	selectedAgent = id
 	defer func() { selectedAgent = old }()
@@ -129,7 +68,7 @@ func TestRemoveAgentClearsSelectionOnCleanupFailure(t *testing.T) {
 	if err := app.RunCommand([]string{"agent", "rm", id}); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("lost cleanup failure: %v", err)
 	}
-	if _, ok := connectedAgents.Load(id); ok {
+	if op.HasAgent(id) {
 		t.Fatal("removed agent still listed")
 	}
 	if selectedAgent != "" {

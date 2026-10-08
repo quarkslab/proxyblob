@@ -6,9 +6,10 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"proxyblob/pkg/protocol"
-	proxy "proxyblob/pkg/proxy/server"
-	socks "proxyblob/pkg/proxy/socks"
+	tunnel "proxyblob/internal/agent"
+	"proxyblob/internal/mux"
+	proxy "proxyblob/internal/proxy"
+	"proxyblob/internal/socks5"
 	"strconv"
 	"sync"
 	"testing"
@@ -17,9 +18,9 @@ import (
 
 func TestUDPAssociateUsesProxyEndpoint(t *testing.T) {
 	a, b := net.Pipe()
-	agent := socks.NewSocksHandler(context.Background(), b)
+	agent := tunnel.New(context.Background(), b)
 	proxy := proxy.NewProxyServer(context.Background(), a)
-	agent.Start("")
+	agent.Start()
 	proxy.Start("127.0.0.1:0")
 	defer agent.Stop()
 	defer proxy.Stop()
@@ -83,12 +84,12 @@ func TestUDPAssociateUsesProxyEndpoint(t *testing.T) {
 	}
 }
 
-func udpTunnel(t *testing.T, listen string) (*proxy.ProxyServer, *socks.SocksHandler) {
+func udpTunnel(t *testing.T, listen string) (*proxy.ProxyServer, *tunnel.Agent) {
 	t.Helper()
 	a, b := net.Pipe()
-	agent := socks.NewSocksHandler(context.Background(), b)
+	agent := tunnel.New(context.Background(), b)
 	proxy := proxy.NewProxyServer(context.Background(), a)
-	agent.Start("")
+	agent.Start()
 	proxy.Start(listen)
 	if proxy.ListenerAddr() == nil {
 		t.Fatal("proxy did not listen")
@@ -170,7 +171,7 @@ func udpEcho(t *testing.T, address string) *net.UDPConn {
 
 func udpExchange(t *testing.T, client *net.UDPConn, relay, target *net.UDPAddr, domain bool, payload []byte) {
 	t.Helper()
-	address := socks.UDPAddress(target)
+	address := socks5.UDPAddress(target)
 	if domain {
 		address = append([]byte{3, 9}, []byte("localhost")...)
 		address = binary.BigEndian.AppendUint16(address, uint16(target.Port))
@@ -187,14 +188,14 @@ func udpExchange(t *testing.T, client *net.UDPConn, relay, target *net.UDPAddr, 
 		t.Fatal(err)
 	}
 	if domain {
-		address, header, code := socks.ExtractUDPHeader(b[:n])
+		address, header, code := socks5.ExtractUDPHeader(b[:n])
 		actual, e := net.ResolveUDPAddr("udp", address)
 		if code != 0 || e != nil || !actual.IP.IsLoopback() || actual.Port != target.Port || !bytes.Equal(b[header:n], payload) {
 			t.Fatalf("domain reply: %v %v", address, e)
 		}
 		return
 	}
-	want := append([]byte{0, 0, 0}, socks.UDPAddress(target)...)
+	want := append([]byte{0, 0, 0}, socks5.UDPAddress(target)...)
 	want = append(want, payload...)
 	if !bytes.Equal(b[:n], want) || !from.IP.Equal(relay.IP) || from.Port != relay.Port {
 		t.Fatalf("UDP identity/source: got %d %v want %d %v", n, from, len(want), relay)
@@ -236,10 +237,10 @@ func TestUDPRejectsMalformedAndWrongSourcePorts(t *testing.T) {
 	proxy, _ := udpTunnel(t, "127.0.0.1:0")
 	client := udpSocket(t, "127.0.0.1:0")
 	spoof := udpSocket(t, "127.0.0.1:0")
-	control, relay := udpAssociate(t, proxy, socks.UDPAddress(client.LocalAddr().(*net.UDPAddr)))
+	control, relay := udpAssociate(t, proxy, socks5.UDPAddress(client.LocalAddr().(*net.UDPAddr)))
 	defer control.Close()
 	target := udpEcho(t, "127.0.0.1:0").LocalAddr().(*net.UDPAddr)
-	valid := append([]byte{0, 0, 0}, socks.UDPAddress(target)...)
+	valid := append([]byte{0, 0, 0}, socks5.UDPAddress(target)...)
 	valid = append(valid, []byte("bad")...)
 	// Wrong source must not claim even the first datagram.
 	spoof.WriteToUDP(valid, relay)
@@ -294,10 +295,10 @@ func TestUDPControlCloseReleasesEndpoint(t *testing.T) {
 
 func TestUDPFiniteDestinationAndAssociationLimits(t *testing.T) {
 	a, b := net.Pipe()
-	cfg := protocol.DefaultFlowConfig()
+	cfg := mux.DefaultFlowConfig()
 	cfg.MaxStreams = 2
 	cfg.UDPDestinations = 2
-	agent, err := socks.NewSocksHandlerWithConfig(context.Background(), b, cfg)
+	agent, err := tunnel.NewWithConfig(context.Background(), b, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +306,7 @@ func TestUDPFiniteDestinationAndAssociationLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent.Start("")
+	agent.Start()
 	proxy.Start("127.0.0.1:0")
 	defer agent.Stop()
 	defer proxy.Stop()
@@ -318,7 +319,7 @@ func TestUDPFiniteDestinationAndAssociationLimits(t *testing.T) {
 	third := udpEcho(t, "127.0.0.1:0").LocalAddr().(*net.UDPAddr)
 	udpExchange(t, client, relay, first, false, []byte("first"))
 	udpExchange(t, client, relay, second, false, []byte("second"))
-	packet := append([]byte{0, 0, 0}, socks.UDPAddress(third)...)
+	packet := append([]byte{0, 0, 0}, socks5.UDPAddress(third)...)
 	packet = append(packet, 1)
 	client.WriteToUDP(packet, relay)
 	client.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
@@ -398,7 +399,7 @@ func TestUDPRejectsWrongSourceIP(t *testing.T) {
 	proxy, _ := udpTunnel(t, "127.0.0.1:0")
 	_, relay := udpAssociate(t, proxy, nil)
 	target := udpEcho(t, "127.0.0.1:0").LocalAddr().(*net.UDPAddr)
-	packet := append([]byte{0, 0, 0}, socks.UDPAddress(target)...)
+	packet := append([]byte{0, 0, 0}, socks5.UDPAddress(target)...)
 	packet = append(packet, 1)
 	if _, err = spoof.WriteToUDP(packet, relay); err != nil {
 		t.Fatal(err)

@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
-	"github.com/jedib0t/go-pretty/table"
+	"proxyblob/internal/operator"
 	"time"
+
+	"github.com/jedib0t/go-pretty/table"
 )
 
 // RenderListenerTable formats listener information into a human-readable table.
-func RenderListenerTable(listeners []ListenerInfo, defaultID string) string {
+func RenderListenerTable(listeners []operator.ListenerInfo, defaultID string) string {
 	t := table.NewWriter()
 	t.SetStyle(table.StyleRounded)
 
@@ -59,7 +61,7 @@ func RenderListenerTable(listeners []ListenerInfo, defaultID string) string {
 
 // RenderAgentTable formats agent information at now. Authorization expiry is
 // informational: it neither guarantees liveness nor schedules disconnection.
-func RenderAgentTable(agents []AgentInfo, now time.Time) string {
+func RenderAgentTable(agents []operator.AgentInfo, now time.Time) string {
 	t := table.NewWriter()
 	t.SetStyle(table.StyleRounded)
 
@@ -92,7 +94,7 @@ func RenderAgentTable(agents []AgentInfo, now time.Time) string {
 			a.ListenerID,
 			a.ProxyPort,
 			a.CreatedAt.Format("2006-01-02 15:04:05"),
-			formatRelativeTime(a.lastSeen()),
+			formatRelativeTime(a.LastSeenTime()),
 			expiry, remaining,
 		})
 	}
