@@ -99,7 +99,13 @@ func (o *Operator) StartListener(listenerID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	handshake, token := bootstrap.Endpoints(listenerID)
 	sessionDuration, _ := listenerConfig.sessionDuration() // validated above
-	l, err := o.listen(listenerConfig.Driver, listenAddr, aznet.WithContext(ctx), aznet.WithEndpoints(handshake, token), aznet.WithSessionDuration(sessionDuration))
+	transport, err := bootstrap.TransportOptions()
+	if err != nil {
+		cancel()
+		return fmt.Errorf("invalid transport configuration: %v", err)
+	}
+	opts := append(transport, aznet.WithContext(ctx), aznet.WithEndpoints(handshake, token), aznet.WithSessionDuration(sessionDuration))
+	l, err := o.listen(listenerConfig.Driver, listenAddr, opts...)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to start aznet listener: %v", err)

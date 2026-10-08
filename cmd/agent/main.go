@@ -54,7 +54,12 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	if err != nil {
 		return nil, ErrConnectionStringError
 	}
-	opts = append(opts, aznet.WithContext(ctx))
+	transport, err := bootstrap.TransportOptions()
+	if err != nil {
+		reportError(diag.ErrorCode(err))
+		return nil, ErrConnectionStringError
+	}
+	opts = append(append(opts, transport...), aznet.WithContext(ctx))
 	conn, err := aznet.Dial(driver, address, opts...)
 	if err != nil {
 		reportError(diag.ErrorCode(err))

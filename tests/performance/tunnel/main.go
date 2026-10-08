@@ -32,6 +32,7 @@ import (
 	"time"
 
 	agentpkg "proxyblob/internal/agent"
+	"proxyblob/internal/bootstrap"
 	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
 
@@ -109,7 +110,11 @@ func serve(args []string) error {
 	metrics := aznet.NewDefaultMetrics()
 	// Unique bootstrap names keep concurrent or leftover runs apart.
 	id := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-	opts := []aznet.Option{aznet.WithContext(ctx), aznet.WithMetrics(metrics), aznet.WithEndpoints("h"+id, "t"+id)}
+	transport, err := bootstrap.TransportOptions()
+	if err != nil {
+		return err
+	}
+	opts := append(transport, aznet.WithContext(ctx), aznet.WithMetrics(metrics), aznet.WithEndpoints("h"+id, "t"+id))
 
 	started := time.Now()
 	ln, err := aznet.Listen(driver, address, opts...)
