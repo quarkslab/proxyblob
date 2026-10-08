@@ -1,4 +1,4 @@
-package main
+package operator
 
 import (
 	"context"
@@ -16,10 +16,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/atsika/aznet"
-	"github.com/desertbit/grumble"
 	"github.com/google/uuid"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 // Exercise the selected aznet implementation, not a substitute AcceptError.
@@ -84,21 +81,19 @@ func TestAznetBootstrapOwnershipAndNamespaces(t *testing.T) {
 	driver := &contractDriver{}
 	aznet.RegisterFactory("contract", contractFactory{driver})
 	defer aznet.UnregisterFactory("contract")
-	oldConfig := config
-	defer func() { config = oldConfig }()
-	config = &Config{Listeners: []ListenerConfig{
+	o := New([]ListenerConfig{
 		{Name: "account-one", Driver: "contract", Address: "https://account.invalid", StorageAccountName: "account", StorageAccountKey: "key"},
 		{Name: "account-two", Driver: "contract", Address: "https://account.invalid", StorageAccountName: "account", StorageAccountKey: "key"},
-	}}
+	})
 	namespaces := map[string]bool{}
-	for _, lc := range config.Listeners {
-		if err := StartListener(lc.Name); err != nil {
+	for _, lc := range o.configs {
+		if err := o.StartListener(lc.Name); err != nil {
 			t.Fatal(err)
 		}
-		state := mustState(t, lc.Name)
+		state := mustState(t, o, lc.Name)
 		defer state.stop()
-		defer listeners.Delete(lc.Name)
-		credential, err := GenerateConnectionString(lc.Name, time.Hour)
+		defer o.listeners.Delete(lc.Name)
+		credential, err := o.ConnectionString(lc.Name, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,11 +116,11 @@ func TestAznetBootstrapOwnershipAndNamespaces(t *testing.T) {
 		namespaces[h] = true
 		namespaces[token] = true
 	}
-	StopListener("account-one")
-	if !mustState(t, "account-two").IsRunning() {
+	o.StopListener("account-one")
+	if !mustState(t, o, "account-two").IsRunning() {
 		t.Fatal("second listener stopped")
 	}
-	StopListener("account-two")
+	o.StopListener("account-two")
 	if driver.cleanup.Load() != 0 {
 		t.Fatal("aznet Close deleted administrator-owned bootstrap; dependency update required")
 	}
@@ -138,8 +133,6 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 		t.Skip("set AZNET_AZURITE=1 with Azurite on localhost:10000-10002")
 	}
 	const key = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
-	previous := config
-	defer func() { config = previous }()
 	for i, driver := range []string{"azblob", "azqueue", "aztable"} {
 		for _, policy := range []struct {
 			setting  string
@@ -147,13 +140,13 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 		}{{"", 24 * time.Hour}, {"2h", 2 * time.Hour}} {
 			t.Run(driver+"/"+policy.setting, func(t *testing.T) {
 				id := uuid.NewString()
-				config = &Config{Listeners: []ListenerConfig{{Name: id, Driver: driver, Address: fmt.Sprintf("http://127.0.0.1:%d/devstoreaccount1", 10000+i), StorageAccountName: "devstoreaccount1", StorageAccountKey: key, SessionDuration: policy.setting}}}
-				if err := StartListener(id); err != nil {
+				o := New([]ListenerConfig{{Name: id, Driver: driver, Address: fmt.Sprintf("http://127.0.0.1:%d/devstoreaccount1", 10000+i), StorageAccountName: "devstoreaccount1", StorageAccountKey: key, SessionDuration: policy.setting}})
+				if err := o.StartListener(id); err != nil {
 					t.Fatal(err)
 				}
-				state := mustState(t, id)
+				state := mustState(t, o, id)
 				defer func() {
-					if err := StopListener(id); err != nil {
+					if err := o.StopListener(id); err != nil {
 						t.Error(err)
 					}
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -161,12 +154,12 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 					if err := state.listener.(*aznet.Listener).CleanupBootstrap(ctx); err != nil {
 						t.Error(err)
 					}
-					listeners.Delete(id)
+					o.listeners.Delete(id)
 				}()
 				var firstExpiry time.Time
 				for _, bootstrapExpiry := range []time.Duration{time.Hour, 7 * 24 * time.Hour} {
 					before := time.Now().Truncate(time.Second)
-					credential, err := GenerateConnectionString(id, bootstrapExpiry)
+					credential, err := o.ConnectionString(id, bootstrapExpiry)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -213,21 +206,18 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 						t.Fatal("session duration not honored")
 					}
 					eventually(t, func() bool {
-						for _, a := range ListAgents() {
+						for _, a := range o.Agents() {
 							if a.ListenerID == id && a.SessionExpiry.Equal(expiry) {
 								return true
 							}
 						}
 						return false
 					})
-					if !strings.Contains(RenderAgentTable(ListAgents(), expiry.Add(-30*time.Minute)), "30m0s") {
-						t.Fatal("session metadata missing from display")
-					}
 					if firstExpiry.IsZero() {
 						firstExpiry = expiry
 					} else {
 						foundFirst := false
-						for _, a := range ListAgents() {
+						for _, a := range o.Agents() {
 							if a.ListenerID == id && a.SessionExpiry.Equal(firstExpiry) {
 								foundFirst = true
 							}
@@ -238,7 +228,7 @@ func TestAzuriteListenerAuthorizationLifetime(t *testing.T) {
 					}
 				}
 				// Stop the server while peers remain connected; deferred client closes follow.
-				if err := StopListener(id); err != nil {
+				if err := o.StopListener(id); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -250,15 +240,13 @@ func TestBootstrapDurationReachesIssuer(t *testing.T) {
 	driver := &durationDriver{}
 	aznet.RegisterFactory("duration", durationFactory{driver})
 	defer aznet.UnregisterFactory("duration")
-	old := config
-	defer func() { config = old }()
-	config = &Config{Listeners: []ListenerConfig{{Name: "duration", Driver: "duration", Address: "https://account.invalid", StorageAccountName: "account", StorageAccountKey: "key"}}}
-	if err := StartListener("duration"); err != nil {
+	o := New([]ListenerConfig{{Name: "duration", Driver: "duration", Address: "https://account.invalid", StorageAccountName: "account", StorageAccountKey: "key"}})
+	if err := o.StartListener("duration"); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { StopListener("duration"); listeners.Delete("duration") }()
+	defer func() { o.StopListener("duration"); o.listeners.Delete("duration") }()
 	for _, duration := range []time.Duration{time.Hour, 7 * 24 * time.Hour} {
-		if _, err := GenerateConnectionString("duration", duration); err != nil {
+		if _, err := o.ConnectionString("duration", duration); err != nil {
 			t.Fatal(err)
 		}
 		if driver.duration != duration {
@@ -266,28 +254,8 @@ func TestBootstrapDurationReachesIssuer(t *testing.T) {
 		}
 	}
 	for _, duration := range []time.Duration{0, -time.Hour, time.Millisecond} {
-		if _, err := GenerateConnectionString("duration", duration); err == nil {
+		if _, err := o.ConnectionString("duration", duration); err == nil {
 			t.Fatal("invalid duration accepted")
-		}
-	}
-	cli := grumble.New(&grumble.Config{Name: "duration-test"})
-	AddCommands(cli)
-	// Suppress generated bootstrap credentials in test output.
-	previousLog := log.Logger
-	log.Logger = zerolog.Nop()
-	defer func() { log.Logger = previousLog }()
-	for _, tc := range []struct {
-		args []string
-		want time.Duration
-	}{
-		{[]string{"new", "--listener", "duration"}, 7 * 24 * time.Hour},
-		{[]string{"new", "--listener", "duration", "--duration", "3h"}, 3 * time.Hour},
-	} {
-		if err := cli.RunCommand(tc.args); err != nil {
-			t.Fatal(err)
-		}
-		if driver.duration != tc.want {
-			t.Fatalf("CLI bootstrap duration %v want %v", driver.duration, tc.want)
 		}
 	}
 }

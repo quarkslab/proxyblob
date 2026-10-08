@@ -1,13 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	proxy "proxyblob/internal/proxy"
-	"strconv"
-	"sync"
+	"proxyblob/internal/operator"
 	"time"
 
 	"github.com/desertbit/grumble"
@@ -16,10 +15,10 @@ import (
 )
 
 var (
-	app              *grumble.App // grumble app instance for prompt updates
-	runningProxies   sync.Map     // active proxies: map[connID]*proxy.ProxyServer
-	selectedAgent    string       // currently selected agent ID
-	selectedListener string       // currently selected/default listener ID
+	app              *grumble.App       // grumble app instance for prompt updates
+	op               *operator.Operator // proxy control plane, created once the config loads
+	selectedAgent    string             // currently selected agent ID
+	selectedListener string             // currently selected/default listener ID
 )
 
 // CLI banner with version.
@@ -50,7 +49,7 @@ func AddCommands(app *grumble.App) {
 		Aliases: []string{"ls"},
 		Help:    "list all listeners",
 		Run: func(c *grumble.Context) error {
-			listenerInfos := ListListeners()
+			listenerInfos := op.Listeners()
 			if len(listenerInfos) == 0 {
 				log.Info().Msg("No listeners configured")
 				return nil
@@ -81,7 +80,7 @@ func AddCommands(app *grumble.App) {
 				log.Error().Msg("No listener specified and no default listener selected. Use 'listener select <id>' first or specify a listener ID")
 				return nil
 			}
-			if err := StartListener(listenerID); err != nil {
+			if err := op.StartListener(listenerID); err != nil {
 				log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to start listener")
 				return nil
 			}
@@ -110,7 +109,7 @@ func AddCommands(app *grumble.App) {
 				log.Error().Msg("No listener specified and no default listener selected. Use 'listener select <id>' first or specify a listener ID")
 				return nil
 			}
-			if err := StopListener(listenerID); err != nil {
+			if err := op.StopListener(listenerID); err != nil {
 				log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to stop listener")
 				return nil
 			}
@@ -153,7 +152,7 @@ func AddCommands(app *grumble.App) {
 
 	// Default action for listener command (list)
 	listenerCmd.Run = func(c *grumble.Context) error {
-		listenerInfos := ListListeners()
+		listenerInfos := op.Listeners()
 		if len(listenerInfos) == 0 {
 			log.Info().Msg("No listeners configured")
 			return nil
@@ -185,21 +184,8 @@ func AddCommands(app *grumble.App) {
 				return nil
 			}
 
-			// Check if listener is running
-			val, ok := listeners.Load(listenerID)
-			if !ok {
-				log.Error().Str("listener_id", listenerID).Msg("Listener not found or not started")
-				return nil
-			}
-
-			state := val.(*ListenerState)
-			if !state.IsRunning() {
-				log.Error().Str("listener_id", listenerID).Msg("Listener is not running")
-				return nil
-			}
-
 			expiry := c.Flags.Duration("duration")
-			connString, err := GenerateConnectionString(listenerID, expiry)
+			connString, err := op.ConnectionString(listenerID, expiry)
 			if err != nil {
 				log.Error().Err(err).Str("listener_id", listenerID).Msg("Failed to generate connection string")
 				return nil
@@ -222,7 +208,7 @@ func AddCommands(app *grumble.App) {
 		Aliases: []string{"ls"},
 		Help:    "list all connected agents",
 		Run: func(c *grumble.Context) error {
-			agents := ListAgents()
+			agents := op.Agents()
 			if len(agents) == 0 {
 				log.Info().Msg("No agents connected")
 				return nil
@@ -246,7 +232,7 @@ func AddCommands(app *grumble.App) {
 			agentID := c.Args.String("agent-id")
 
 			// Verify agent exists
-			if _, ok := connectedAgents.Load(agentID); !ok {
+			if !op.HasAgent(agentID) {
 				log.Error().Str("agent_id", agentID).Msg("Agent not found")
 				return nil
 			}
@@ -272,74 +258,27 @@ func AddCommands(app *grumble.App) {
 				return nil
 			}
 
-			// Check if proxy already running
-			if _, exists := runningProxies.Load(selectedAgent); exists {
+			listenAddr := c.Flags.String("listen")
+			addr, err := op.StartProxy(selectedAgent, listenAddr)
+			switch {
+			case errors.Is(err, operator.ErrProxyRunning):
 				log.Warn().Msg("Proxy already running for this agent")
 				return nil
-			}
-
-			// Get the agent connection
-			val, ok := connectedAgents.Load(selectedAgent)
-			if !ok {
+			case errors.Is(err, operator.ErrAgentNotFound):
 				log.Error().Msg("Selected agent no longer connected")
 				selectedAgent = ""
 				c.App.SetPrompt("proxyblob » ")
 				return nil
-			}
-
-			agent := val.(*AgentConnection)
-			agent.mu.Lock()
-			defer agent.mu.Unlock()
-			if agent.closed {
-				return fmt.Errorf("agent disconnected")
-			}
-			proxyServer := agent.server
-
-			listenAddr := c.Flags.String("listen")
-			host, port, err := net.SplitHostPort(listenAddr)
-			if err != nil {
-				log.Error().Err(err).Str("listen", listenAddr).Msg("Failed to parse listen address")
+			case errors.Is(err, operator.ErrAgentClosed):
+				return err
+			case err != nil:
+				log.Error().Err(err).Str("listen", listenAddr).Msg("Failed to start proxy")
 				return nil
 			}
-			oldPort := port
-
-			portInt, _ := strconv.Atoi(port)
-			for {
-				portAvailable := true
-				runningProxies.Range(func(key, value interface{}) bool {
-					server := value.(*proxy.ProxyServer)
-					if addr := server.ListenerAddr(); addr != nil {
-						_, serverPort, _ := net.SplitHostPort(addr.String())
-						if serverPort == port {
-							portAvailable = false
-							return false
-						}
-					}
-					return true
-				})
-				if portAvailable {
-					break
-				}
-				portInt++
-				port = strconv.Itoa(portInt)
-			}
-
-			if oldPort != port {
-				log.Warn().Str("used_port", oldPort).Str("selected_port", port).Msg("Proxy already running on this port")
-			}
-
-			listenAddr = fmt.Sprintf("%s:%s", host, port)
-			proxyServer.Start(listenAddr)
-
-			addr := proxyServer.ListenerAddr()
-			if addr == nil {
-				log.Error().Str("addr", listenAddr).Msg("Failed to start proxy")
-				return nil
-			}
-
-			runningProxies.Store(selectedAgent, proxyServer)
-
 			_, portStr, _ := net.SplitHostPort(addr.String())
+			if _, wanted, _ := net.SplitHostPort(listenAddr); wanted != portStr {
+				log.Warn().Str("used_port", wanted).Str("selected_port", portStr).Msg("Proxy already running on this port")
+			}
 			log.Info().Str("agent_id", selectedAgent).Str("port", portStr).Msg("Proxy started")
 
 			return nil
@@ -356,16 +295,10 @@ func AddCommands(app *grumble.App) {
 				return nil
 			}
 
-			// Get and remove the proxy
-			val, exists := runningProxies.LoadAndDelete(selectedAgent)
-			if !exists {
+			if err := op.StopProxy(selectedAgent); err != nil {
 				log.Warn().Msg("No proxy running for this agent")
 				return nil
 			}
-
-			// Stop the proxy
-			server := val.(*proxy.ProxyServer)
-			server.StopListening()
 
 			log.Info().Str("agent_id", selectedAgent).Msg("Proxy stopped")
 
@@ -388,14 +321,11 @@ func AddCommands(app *grumble.App) {
 				agentID = selectedAgent
 			}
 
-			// Get the agent
-			val, ok := connectedAgents.LoadAndDelete(agentID)
-			if !ok {
+			err := op.RemoveAgent(agentID)
+			if errors.Is(err, operator.ErrAgentNotFound) {
 				log.Error().Str("agent_id", agentID).Msg("Agent not found")
 				return nil
 			}
-
-			agent := val.(*AgentConnection)
 
 			// Selection follows local removal even when remote cleanup fails.
 			if selectedAgent == agentID {
@@ -403,7 +333,7 @@ func AddCommands(app *grumble.App) {
 				c.App.SetPrompt("proxyblob » ")
 			}
 
-			if err := agent.close(); err != nil {
+			if err != nil {
 				return err
 			}
 
@@ -415,7 +345,7 @@ func AddCommands(app *grumble.App) {
 
 	// Default action for agent command (list)
 	agentCmd.Run = func(c *grumble.Context) error {
-		agents := ListAgents()
+		agents := op.Agents()
 		if len(agents) == 0 {
 			log.Info().Msg("No agents connected")
 			return nil
@@ -430,12 +360,7 @@ func AddCommands(app *grumble.App) {
 
 // CompleteAgents provides tab completion for agent IDs.
 func CompleteAgents(_ string, _ []string) []string {
-	var completions []string
-	connectedAgents.Range(func(key, _ interface{}) bool {
-		completions = append(completions, key.(string))
-		return true
-	})
-	return completions
+	return op.AgentIDs()
 }
 
 // CompleteListeners provides tab completion for listener IDs.
@@ -481,6 +406,7 @@ func setupCLI() *grumble.App {
 		if err != nil {
 			return fmt.Errorf("failed to load configuration: %v", err)
 		}
+		op = operator.New(config.Listeners)
 
 		// Note: Listeners are not auto-started. User must start them explicitly.
 		// When a listener is started, it automatically becomes the default.
