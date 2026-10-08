@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"proxyblob/internal/diag"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -112,7 +113,7 @@ func (c *Connection) Close() byte {
 			h.releaseReservation(c)
 		}
 	})
-	return ErrNone
+	return diag.ErrNone
 }
 
 // Deliver copies into the one reserved receive ring. It never waits for the
@@ -194,7 +195,7 @@ func (c *Connection) read(ctx context.Context, closed <-chan struct{}, b []byte)
 			c.used -= n
 			if c.consumed > math.MaxUint64-uint64(n) {
 				c.deliveryMu.Unlock()
-				return 0, ErrFlowControl
+				return 0, diag.ErrFlowControl
 			}
 			c.consumed += uint64(n)
 			// The bytes have left the ring. Read's caller now owns its own bounded

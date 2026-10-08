@@ -3,6 +3,7 @@ package agent
 import (
 	"net"
 	"proxyblob/internal/agent/netenv"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/socks5"
 
 	"proxyblob/internal/mux"
@@ -25,12 +26,12 @@ func (h *SocksHandler) handleConnect(conn *mux.Connection, cmdData []byte) byte 
 		// Send malformed request response
 		response := []byte{socks5.Version5, socks5.GeneralFailure, 0x00, socks5.IPv4, 0, 0, 0, 0, 0, 0}
 		h.SendData(conn.ID, response)
-		return mux.ErrAddressNotSupported
+		return diag.ErrAddressNotSupported
 	}
 
 	// Parse target address
 	target, errCode := socks5.ParseAddress(cmdData[3:])
-	if errCode != mux.ErrNone {
+	if errCode != diag.ErrNone {
 		h.SendError(conn, errCode)
 		return errCode
 	}
@@ -41,7 +42,7 @@ func (h *SocksHandler) handleConnect(conn *mux.Connection, cmdData []byte) byte 
 	cancelSetup()
 	if err != nil {
 		// Map network error to appropriate protocol error code
-		errCode = mux.MapNetError(err)
+		errCode = diag.MapNetError(err)
 		h.SendError(conn, errCode)
 		return errCode
 	}
@@ -52,11 +53,11 @@ func (h *SocksHandler) handleConnect(conn *mux.Connection, cmdData []byte) byte 
 	}
 
 	if !conn.AttachDestination(targetConn) {
-		return mux.ErrConnectionClosed
+		return diag.ErrConnectionClosed
 	}
 
-	if h.sendTCPReply(conn, socks5.Succeeded, targetConn.LocalAddr().(*net.TCPAddr)) != mux.ErrNone {
-		return mux.ErrPacketSendFailed
+	if h.sendTCPReply(conn, socks5.Succeeded, targetConn.LocalAddr().(*net.TCPAddr)) != diag.ErrNone {
+		return diag.ErrPacketSendFailed
 	}
 
 	// Start data transfer
@@ -73,10 +74,10 @@ func (h *SocksHandler) handleConnect(conn *mux.Connection, cmdData []byte) byte 
 func (h *SocksHandler) handleTCPDataTransfer(conn *mux.Connection, tcpConn net.Conn) byte {
 	err := mux.Forward(tcpConn, conn.ProtocolConn())
 	if err != nil {
-		code := mux.StreamErrorCode(err)
+		code := diag.StreamErrorCode(err)
 		h.SendClose(conn.ID, code)
 		return code
 	}
-	h.SendClose(conn.ID, mux.ErrNone)
-	return mux.ErrNone
+	h.SendClose(conn.ID, diag.ErrNone)
+	return diag.ErrNone
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"proxyblob/internal/diag"
 	"strconv"
 	"testing"
 
@@ -57,20 +58,20 @@ func TestParseNext(t *testing.T) {
 		{
 			name:         "buffer shorter than header",
 			buf:          onePacket[:HeaderSize-1],
-			wantErr:      ErrShortPacket,
+			wantErr:      diag.ErrShortPacket,
 			wantTrailing: HeaderSize - 1,
 		},
 		{
 			name:         "empty buffer",
 			buf:          nil,
-			wantErr:      ErrShortPacket,
+			wantErr:      diag.ErrShortPacket,
 			wantTrailing: 0,
 		},
 		{
 			name:         "exactly one complete packet",
 			buf:          onePacket,
 			want:         []*Packet{NewPacket(CmdData, id, makePayload(32, 0xA5))},
-			wantErr:      ErrShortPacket,
+			wantErr:      diag.ErrShortPacket,
 			wantTrailing: 0,
 		},
 		{
@@ -81,38 +82,38 @@ func TestParseNext(t *testing.T) {
 				NewPacket(CmdAck, id, nil),
 				NewPacket(CmdData, id, makePayload(64, 0x22)),
 			},
-			wantErr:      ErrShortPacket,
+			wantErr:      diag.ErrShortPacket,
 			wantTrailing: 0,
 		},
 		{
 			name:         "zero length payload on close",
 			buf:          emptyPacket,
 			want:         []*Packet{NewPacket(CmdClose, id, nil)},
-			wantErr:      ErrShortPacket,
+			wantErr:      diag.ErrShortPacket,
 			wantTrailing: 0,
 		},
 		{
 			name:         "invalid command zero",
 			buf:          encodeHeader(0, id, 0),
-			wantErr:      ErrMalformedPacket,
+			wantErr:      diag.ErrMalformedPacket,
 			wantTrailing: HeaderSize,
 		},
 		{
 			name:         "invalid command ten",
 			buf:          encodeHeader(CmdDatagram+1, id, 0),
-			wantErr:      ErrMalformedPacket,
+			wantErr:      diag.ErrMalformedPacket,
 			wantTrailing: HeaderSize,
 		},
 		{
 			name:         "declared length above maximum",
 			buf:          encodeHeader(CmdData, id, MaxPacketDataSize+1),
-			wantErr:      ErrMalformedPacket,
+			wantErr:      diag.ErrMalformedPacket,
 			wantTrailing: HeaderSize,
 		},
 		{
 			name:         "header present but body truncated",
 			buf:          onePacket[:HeaderSize+10],
-			wantErr:      ErrShortPacket,
+			wantErr:      diag.ErrShortPacket,
 			wantTrailing: HeaderSize + 10,
 		},
 	}
@@ -170,11 +171,11 @@ func TestParseNextRejectsOversizedLengthImmediately(t *testing.T) {
 		buf := encodeHeader(CmdData, id, dataLength)
 
 		packet, consumed, err := ParseNext(buf)
-		if errors.Is(err, ErrShortPacket) {
-			t.Fatalf("dataLength %d: got ErrShortPacket, caller would buffer unboundedly", dataLength)
+		if errors.Is(err, diag.ErrShortPacket) {
+			t.Fatalf("dataLength %d: got diag.ErrShortPacket, caller would buffer unboundedly", dataLength)
 		}
-		if !errors.Is(err, ErrMalformedPacket) {
-			t.Fatalf("dataLength %d: error = %v, want ErrMalformedPacket", dataLength, err)
+		if !errors.Is(err, diag.ErrMalformedPacket) {
+			t.Fatalf("dataLength %d: error = %v, want diag.ErrMalformedPacket", dataLength, err)
 		}
 		if packet != nil || consumed != 0 {
 			t.Fatalf("dataLength %d: got (%+v, %d), want (nil, 0)", dataLength, packet, consumed)
@@ -184,8 +185,8 @@ func TestParseNextRejectsOversizedLengthImmediately(t *testing.T) {
 	// A length exactly at the cap is legal framing, so it must be reported as
 	// short (waiting for the body) and not rejected.
 	buf := encodeHeader(CmdData, id, MaxPacketDataSize)
-	if _, _, err := ParseNext(buf); !errors.Is(err, ErrShortPacket) {
-		t.Fatalf("dataLength at cap: error = %v, want ErrShortPacket", err)
+	if _, _, err := ParseNext(buf); !errors.Is(err, diag.ErrShortPacket) {
+		t.Fatalf("dataLength at cap: error = %v, want diag.ErrShortPacket", err)
 	}
 }
 
@@ -241,7 +242,7 @@ func TestParseNextReassemblyAcrossReadBoundaries(t *testing.T) {
 					offset := 0
 					for {
 						packet, consumed, perr := ParseNext(acc[offset:])
-						if errors.Is(perr, ErrShortPacket) {
+						if errors.Is(perr, diag.ErrShortPacket) {
 							break
 						}
 						if perr != nil {

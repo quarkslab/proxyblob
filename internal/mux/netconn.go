@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/internal/diag"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,7 +105,7 @@ func (c *ProtocolConn) Shutdown() {
 // Close implements net.Conn.Close.
 // Sends a CmdClose packet and then shuts down locally.
 func (c *ProtocolConn) Close() error {
-	return c.closeWithCode(ErrStreamCanceled)
+	return c.closeWithCode(diag.ErrStreamCanceled)
 }
 
 func (c *ProtocolConn) closeWithCode(code byte) error {

@@ -2,6 +2,7 @@ package mux
 
 import (
 	"net"
+	"proxyblob/internal/diag"
 	"sync"
 
 	"github.com/google/uuid"
@@ -118,39 +119,39 @@ func (d *Datagrams) Reject(code byte) error {
 func (h *BaseHandler) receiveDatagram(cmd byte, id uuid.UUID, b []byte) byte {
 	v, ok := h.Connections.Load(id)
 	if !ok {
-		return ErrNone
+		return diag.ErrNone
 	}
 	c := v.(*Connection)
 	if cmd == CmdUDPAssociate {
 		if len(b) > 259 || len(b) < 5 {
-			return ErrInvalidPacket
+			return diag.ErrInvalidPacket
 		}
 		receiver, ok := h.PacketHandler.(interface {
 			OnUDPAssociate(*Connection, []byte) byte
 		})
 		if !ok {
-			return ErrUnexpectedPacket
+			return diag.ErrUnexpectedPacket
 		}
 		return receiver.OnUDPAssociate(c, b)
 	}
 	d := c.Datagrams()
 	if d == nil {
-		return ErrInvalidState
+		return diag.ErrInvalidState
 	}
 	if cmd == CmdUDPReady {
 		if len(b) < 8 || len(b) > 20 {
-			return ErrInvalidPacket
+			return diag.ErrInvalidPacket
 		}
 		select {
 		case d.ready <- append([]byte(nil), b...):
-			return ErrNone
+			return diag.ErrNone
 		default:
-			return ErrInvalidState
+			return diag.ErrInvalidState
 		}
 	}
 	if len(b) > MaxDatagramSize || len(b) < 8 {
-		return ErrInvalidPacket
+		return diag.ErrInvalidPacket
 	}
 	d.deliver(b)
-	return ErrNone
+	return diag.ErrNone
 }

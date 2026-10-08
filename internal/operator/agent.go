@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"proxyblob/internal/diag"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -106,7 +107,7 @@ func (o *Operator) acceptAgentLoop(ctx context.Context, listenerID string, state
 		agent.setLastSeen(agent.CreatedAt)
 		cfg, err := mux.FlowConfigFromEnv()
 		if err != nil {
-			log.Error().Uint8("code", mux.ErrorCode(err)).Msg(proxy.ErrorDescription(mux.ErrorCode(err)))
+			log.Error().Uint8("code", diag.ErrorCode(err)).Msg(diag.Description(diag.ErrorCode(err)))
 			conn.Close()
 			continue
 		}

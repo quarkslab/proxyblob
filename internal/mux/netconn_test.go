@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"proxyblob/internal/diag"
 	"runtime"
 	"slices"
 	"strconv"
@@ -484,7 +485,7 @@ func TestPipelineCloseDiscardsQueuedDataBeforeCloseRecord(t *testing.T) {
 		for range 4 {
 			h.enqueue(CmdData, c.ID, make([]byte, 8), c.Closed, false)
 		}
-		h.SendClose(c.ID, ErrConnectionClosed)
+		h.SendClose(c.ID, diag.ErrConnectionClosed)
 		h.queueMu.Lock()
 		if h.dataBytes != 0 || h.dataRecords != 0 {
 			t.Error("cancelled queue retains capacity")

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/socks5"
 	"strconv"
 	"sync"
@@ -18,7 +19,7 @@ import (
 // between replies. The setup timeout is configurable through WithBindTimeout.
 func (h *SocksHandler) handleBind(c *mux.Connection, data []byte) byte {
 	target, code := socks5.ParseAddress(data[3:])
-	if code != mux.ErrNone {
+	if code != diag.ErrNone {
 		h.SendError(c, code)
 		return code
 	}
@@ -35,13 +36,13 @@ func (h *SocksHandler) handleBind(c *mux.Connection, data []byte) byte {
 	}()
 	ips, port, err := bindPeer(ctx, target)
 	if err != nil {
-		code = mux.MapNetError(err)
+		code = diag.MapNetError(err)
 		h.SendError(c, code)
 		return code
 	}
 	listener, err := listenBind(ctx, ips)
 	if err != nil {
-		code = mux.MapNetError(err)
+		code = diag.MapNetError(err)
 		h.SendError(c, code)
 		return code
 	}
@@ -50,24 +51,24 @@ func (h *SocksHandler) handleBind(c *mux.Connection, data []byte) byte {
 	defer closeListener()
 	stop := context.AfterFunc(ctx, closeListener)
 	defer stop()
-	if code = h.sendTCPReply(c, socks5.Succeeded, listener.Addr().(*net.TCPAddr)); code != mux.ErrNone {
+	if code = h.sendTCPReply(c, socks5.Succeeded, listener.Addr().(*net.TCPAddr)); code != diag.ErrNone {
 		return code
 	}
 	for {
 		peer, err := listener.Accept()
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				code = mux.ErrTTLExpired
+				code = diag.ErrTTLExpired
 			} else {
-				code = mux.MapNetError(err)
+				code = diag.MapNetError(err)
 			}
 			h.SendError(c, code)
 			return code
 		}
 		if ctx.Err() != nil {
 			peer.Close()
-			h.SendError(c, mux.ErrTTLExpired)
-			return mux.ErrTTLExpired
+			h.SendError(c, diag.ErrTTLExpired)
+			return diag.ErrTTLExpired
 		}
 		remote := peer.RemoteAddr().(*net.TCPAddr)
 		allowed := port == 0 || remote.Port == port
@@ -88,9 +89,9 @@ func (h *SocksHandler) handleBind(c *mux.Connection, data []byte) byte {
 		cancel()
 		owned := &bindConn{TCPConn: peer.(*net.TCPConn)}
 		if !c.AttachDestination(owned) {
-			return mux.ErrConnectionClosed
+			return diag.ErrConnectionClosed
 		}
-		if code = h.sendTCPReply(c, socks5.Succeeded, remote); code != mux.ErrNone {
+		if code = h.sendTCPReply(c, socks5.Succeeded, remote); code != diag.ErrNone {
 			return code
 		}
 		return h.handleTCPDataTransfer(c, owned)
@@ -121,7 +122,7 @@ func listenBind(ctx context.Context, ips []net.IPAddr) (net.Listener, error) {
 		last = err
 	}
 	if last == nil {
-		last = mux.ErrNoBindPeers
+		last = diag.ErrNoBindPeers
 	}
 	return nil, last
 }
@@ -140,7 +141,7 @@ func bindPeer(ctx context.Context, target string) ([]net.IPAddr, int, error) {
 		return nil, 0, err
 	}
 	if len(ips) == 0 {
-		return nil, 0, mux.ErrNoDNSAddresses
+		return nil, 0, diag.ErrNoDNSAddresses
 	}
 	return ips, port, nil
 }
@@ -169,7 +170,7 @@ func bindLocal(ctx context.Context, peer net.IPAddr) (*net.UDPAddr, error) {
 				}
 			}
 		}
-		return nil, mux.ErrNoBindInterface
+		return nil, diag.ErrNoBindInterface
 	}
 	network := "udp6"
 	if peer.IP.To4() != nil {

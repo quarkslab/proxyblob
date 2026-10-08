@@ -5,6 +5,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"proxyblob/internal/diag"
 	"strconv"
 	"time"
 
@@ -43,7 +44,7 @@ func (c FlowConfig) validate() error {
 		c.BatchBytes < max(c.DataFrame, 12)+HeaderSize || c.BatchBytes > 16<<20 ||
 		c.ControlSlots < 4*c.MaxStreams || c.ControlSlots > 1<<20 ||
 		c.DrainTimeout <= 0 || c.UDPQueueBytes < 1 || c.UDPQueueBytes > 16<<20 || c.UDPQueuePackets < 1 || c.UDPQueuePackets > 4096 || c.UDPDestinations < 1 || c.UDPDestinations > 4096 {
-		return ErrInvalidFlowConfig
+		return diag.ErrInvalidFlowConfig
 	}
 	return nil
 }
@@ -61,14 +62,14 @@ func (h *BaseHandler) handshake() []byte {
 
 func peerWindow(b []byte) (uint64, error) {
 	if len(b) < 4 || binary.BigEndian.Uint32(b) != ProtocolVersion {
-		return 0, ErrUnsupportedVersion
+		return 0, diag.ErrUnsupportedVersion
 	}
 	if len(b) != 12 {
-		return 0, ErrFlowControl
+		return 0, diag.ErrFlowControl
 	}
 	n := binary.BigEndian.Uint64(b[4:])
 	if n == 0 || n > MaxPacketDataSize {
-		return 0, ErrFlowControl
+		return 0, diag.ErrFlowControl
 	}
 	return n, nil
 }
@@ -82,10 +83,10 @@ func (h *BaseHandler) RegisterConnection(c *Connection) error {
 		return h.Ctx.Err()
 	}
 	if h.streams >= h.flow.MaxStreams || h.reserved > h.flow.TunnelWindow-h.flow.StreamWindow {
-		return ErrCapacity
+		return diag.ErrCapacity
 	}
 	if _, exists := h.Connections.Load(c.ID); exists {
-		return Error(ErrConnectionExists)
+		return diag.Error(diag.ErrConnectionExists)
 	}
 	c.deliveryMu.Lock()
 	select {
@@ -114,7 +115,7 @@ func (c *Connection) setPeerWindow(window uint64) error {
 	c.creditMu.Lock()
 	defer c.creditMu.Unlock()
 	if c.peerWindow != 0 {
-		return ErrFlowControl
+		return diag.ErrFlowControl
 	}
 	c.peerWindow = window
 	c.creditChanged()
@@ -129,7 +130,7 @@ func (c *Connection) updateCredit(consumed uint64) error {
 	c.creditMu.Lock()
 	defer c.creditMu.Unlock()
 	if c.peerWindow == 0 || consumed > c.sent {
-		return ErrFlowControl
+		return diag.ErrFlowControl
 	}
 	if consumed <= c.peerConsumed {
 		return nil
@@ -147,7 +148,7 @@ func (c *Connection) acquireCredit(want int, stop <-chan struct{}) (int, error) 
 			n := min(want, int(available))
 			if c.sent > math.MaxUint64-uint64(n) {
 				c.creditMu.Unlock()
-				return 0, ErrFlowControl
+				return 0, diag.ErrFlowControl
 			}
 			c.sent += uint64(n)
 			c.creditMu.Unlock()
@@ -171,16 +172,16 @@ func (c *Connection) acquireCredit(want int, stop <-chan struct{}) (int, error) 
 
 func (h *BaseHandler) receiveCredit(id uuid.UUID, data []byte) byte {
 	if len(data) != 8 {
-		return ErrInvalidPacket
+		return diag.ErrInvalidPacket
 	}
 	v, ok := h.Connections.Load(id)
 	if !ok {
-		return ErrNone
+		return diag.ErrNone
 	} // delayed control for a disposed stream
 	if err := v.(*Connection).updateCredit(binary.BigEndian.Uint64(data)); err != nil {
-		return ErrInvalidPacket
+		return diag.ErrInvalidPacket
 	}
-	return ErrNone
+	return diag.ErrNone
 }
 
 // FlowConfigFromEnv is shared by native and WASM commands. Byte/count values
@@ -201,7 +202,7 @@ func FlowConfigFromEnv() (FlowConfig, error) {
 		if value, ok := os.LookupEnv(name); ok {
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return c, ErrInvalidFlowConfig
+				return c, diag.ErrInvalidFlowConfig
 			}
 			*target = n
 		}
@@ -209,7 +210,7 @@ func FlowConfigFromEnv() (FlowConfig, error) {
 	if value, ok := os.LookupEnv("PROXYBLOB_DRAIN_TIMEOUT"); ok {
 		duration, err := time.ParseDuration(value)
 		if err != nil {
-			return c, ErrInvalidFlowConfig
+			return c, diag.ErrInvalidFlowConfig
 		}
 		c.DrainTimeout = duration
 	}

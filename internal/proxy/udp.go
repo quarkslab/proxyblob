@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"proxyblob/internal/diag"
 	"sync"
 	"time"
 
@@ -17,13 +18,13 @@ import (
 func (s *ProxyServer) OnUDPAssociate(c *mux.Connection, address []byte) byte {
 	d := c.EnableDatagrams()
 	if d == nil {
-		return mux.ErrInvalidState
+		return diag.ErrInvalidState
 	}
 	go s.serveUDP(c, d, append([]byte(nil), address...))
-	return mux.ErrNone
+	return diag.ErrNone
 }
 func (s *ProxyServer) serveUDP(c *mux.Connection, d *mux.Datagrams, request []byte) {
-	defer s.SendClose(c.ID, mux.ErrNone)
+	defer s.SendClose(c.ID, diag.ErrNone)
 	local, remote := c.DestinationAddresses()
 	l, ok := local.(*net.TCPAddr)
 	if !ok {
@@ -34,7 +35,7 @@ func (s *ProxyServer) serveUDP(c *mux.Connection, d *mux.Datagrams, request []by
 		return
 	}
 	requested, code := socks5.ParseAddress(request)
-	if code != mux.ErrNone {
+	if code != diag.ErrNone {
 		return
 	}
 	host, _, err := net.SplitHostPort(requested)
@@ -87,7 +88,7 @@ func (s *ProxyServer) serveUDP(c *mux.Connection, d *mux.Datagrams, request []by
 			if !from.IP.Equal(r.IP) || sourcePort != 0 && from.Port != sourcePort {
 				continue
 			}
-			if _, _, code := socks5.ExtractUDPHeader(buf[:n]); code != mux.ErrNone {
+			if _, _, code := socks5.ExtractUDPHeader(buf[:n]); code != diag.ErrNone {
 				continue
 			}
 			mu.Lock()
@@ -99,7 +100,7 @@ func (s *ProxyServer) serveUDP(c *mux.Connection, d *mux.Datagrams, request []by
 			if !allowed {
 				continue
 			}
-			if e = d.Send(buf[:n]); e != nil && !errors.Is(e, mux.ErrDatagramDropped) {
+			if e = d.Send(buf[:n]); e != nil && !errors.Is(e, diag.ErrDatagramDropped) {
 				finished <- e
 				c.Close()
 				socket.Close()
@@ -120,7 +121,7 @@ func (s *ProxyServer) serveUDP(c *mux.Connection, d *mux.Datagrams, request []by
 		if e != nil {
 			return
 		}
-		if _, _, code := socks5.ExtractUDPHeader(packet); code != mux.ErrNone {
+		if _, _, code := socks5.ExtractUDPHeader(packet); code != diag.ErrNone {
 			continue
 		}
 		mu.Lock()

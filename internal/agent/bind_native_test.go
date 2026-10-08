@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
-	"proxyblob/internal/mux"
+	"proxyblob/internal/diag"
 	"testing"
 )
 
@@ -34,10 +34,10 @@ func TestBindTriesUsableCandidateAfterUnusableAddress(t *testing.T) {
 
 func TestBindWithoutCandidatesUsesNumericError(t *testing.T) {
 	listener, err := listenBind(context.Background(), nil)
-	if listener != nil || !errors.Is(err, mux.ErrNoBindPeers) || err.Error() != "56" {
+	if listener != nil || !errors.Is(err, diag.ErrNoBindPeers) || err.Error() != "56" {
 		t.Fatalf("unexpected empty BIND result: %v", err)
 	}
-	if got := mux.MapNetError(err); got != mux.ErrConnectionRefused {
+	if got := diag.MapNetError(err); got != diag.ErrConnectionRefused {
 		t.Fatalf("changed SOCKS failure code: %d", got)
 	}
 }

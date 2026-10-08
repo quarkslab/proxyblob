@@ -10,7 +10,7 @@ import (
 	"net"
 	"os"
 	"proxyblob/internal/agent/netenv/netenvtest"
-	"proxyblob/internal/mux"
+	"proxyblob/internal/diag"
 	"strconv"
 	"syscall/js"
 	"testing"
@@ -444,7 +444,7 @@ func TestJSUDPReportsTruncationAndWriteRefusal(t *testing.T) {
 func TestJSSetupFailureDoesNotCarryHostMessage(t *testing.T) {
 	netenvtest.Host(t, "error") // host reports the text "setup failure"
 	conn, err := DialTCPContext(context.Background(), "127.0.0.1:9")
-	if conn != nil || !errors.Is(err, mux.Error(mux.ErrTransportError)) || err.Error() != "22" {
+	if conn != nil || !errors.Is(err, diag.Error(diag.ErrTransportError)) || err.Error() != "22" {
 		t.Fatalf("unsanitized host failure: %v", err)
 	}
 }

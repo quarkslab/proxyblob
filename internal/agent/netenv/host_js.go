@@ -4,7 +4,7 @@ package netenv
 
 import (
 	"errors"
-	"proxyblob/internal/mux"
+	"proxyblob/internal/diag"
 	"sync"
 	"syscall/js"
 )
@@ -14,7 +14,7 @@ import (
 func requireJSHost(name string) error {
 	v := js.Global().Get("ProxyBlobSocketHostVersion")
 	if v.Type() != js.TypeNumber || v.Float() != 2 || js.Global().Get(name).Type() != js.TypeFunction {
-		return errors.Join(mux.ErrJSHostUnsupported, errors.ErrUnsupported)
+		return errors.Join(diag.ErrJSHostUnsupported, errors.ErrUnsupported)
 	}
 	return nil
 }
@@ -38,5 +38,5 @@ func (l *jsLifetime) dispose() {
 }
 
 func jsSocketError() error {
-	return mux.Error(mux.ErrTransportError)
+	return diag.Error(diag.ErrTransportError)
 }

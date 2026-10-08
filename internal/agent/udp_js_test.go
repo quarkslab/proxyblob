@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"proxyblob/internal/agent/netenv/netenvtest"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/socks5"
 	"testing"
 	"time"
@@ -26,33 +27,33 @@ type udpTestPeer struct {
 }
 
 func (h *udpTestPeer) Stop()                        { h.Abort() }
-func (h *udpTestPeer) OnNew(uuid.UUID, []byte) byte { return mux.ErrUnexpectedPacket }
+func (h *udpTestPeer) OnNew(uuid.UUID, []byte) byte { return diag.ErrUnexpectedPacket }
 func (h *udpTestPeer) OnAck(id uuid.UUID, _ []byte) byte {
 	v, ok := h.Connections.Load(id)
 	if !ok {
-		return mux.ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	if !v.(*mux.Connection).SetProtocolConn(mux.NewProtocolConn(h.Ctx, id, h.BaseHandler)) {
-		return mux.ErrConnectionClosed
+		return diag.ErrConnectionClosed
 	}
-	return mux.ErrNone
+	return diag.ErrNone
 }
 func (h *udpTestPeer) OnData(id uuid.UUID, b []byte) byte {
 	v, ok := h.Connections.Load(id)
 	if !ok || !v.(*mux.Connection).Deliver(b) {
-		return mux.ErrConnectionClosed
+		return diag.ErrConnectionClosed
 	}
-	return mux.ErrNone
+	return diag.ErrNone
 }
 func (h *udpTestPeer) OnClose(id uuid.UUID, code byte) byte { return h.PeerClose(id, code) }
 func (h *udpTestPeer) OnUDPAssociate(c *mux.Connection, _ []byte) byte {
 	d := c.EnableDatagrams()
 	if d == nil {
-		return mux.ErrInvalidState
+		return diag.ErrInvalidState
 	}
 	h.ready <- d
 	go d.Ready([]byte{1, 127, 0, 0, 1, 4, 56})
-	return mux.ErrNone
+	return diag.ErrNone
 }
 func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
 	port := netenvtest.RealPeer(t, "udp")

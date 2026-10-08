@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"proxyblob/internal/agent/netenv"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/socks5"
 	"sync"
 	"time"
@@ -14,22 +15,22 @@ import (
 
 // The proxy owns the client endpoint. The agent only owns target-facing UDP.
 func (h *SocksHandler) handleUDPAssociate(conn *mux.Connection, request []byte) byte {
-	if target, code := socks5.ParseAddress(request); code != mux.ErrNone {
+	if target, code := socks5.ParseAddress(request); code != diag.ErrNone {
 		return h.failUDPAssociate(conn, code)
 	} else if _, _, err := net.SplitHostPort(target); err != nil {
-		return h.failUDPAssociate(conn, mux.ErrAddressNotSupported)
+		return h.failUDPAssociate(conn, diag.ErrAddressNotSupported)
 	}
 	d := conn.EnableDatagrams()
 	if d == nil {
-		return mux.ErrInvalidState
+		return diag.ErrInvalidState
 	}
 	// A control FIN ends this association, including while setup is in flight.
-	go func() { io.Copy(io.Discard, conn.ProtocolConn()); h.SendClose(conn.ID, mux.ErrNone) }()
+	go func() { io.Copy(io.Discard, conn.ProtocolConn()); h.SendClose(conn.ID, diag.ErrNone) }()
 	setupCtx, cancel := socketSetupContext(h.Ctx, conn.Closed)
 	socket, err := netenv.ListenUDPContext(setupCtx)
 	cancel()
 	if err != nil {
-		return h.failUDPAssociate(conn, mux.ErrNetworkUnreachable)
+		return h.failUDPAssociate(conn, diag.ErrNetworkUnreachable)
 	}
 	defer socket.Close()
 	done := make(chan struct{})
@@ -45,21 +46,21 @@ func (h *SocksHandler) handleUDPAssociate(conn *mux.Connection, request []byte) 
 
 	address, err := d.Request(request)
 	if err != nil {
-		return mux.ErrConnectionClosed
+		return diag.ErrConnectionClosed
 	}
-	if h.SendData(conn.ID, append([]byte{socks5.Version5, address[0], 0}, address[1:]...)) != mux.ErrNone {
-		return mux.ErrPacketSendFailed
+	if h.SendData(conn.ID, append([]byte{socks5.Version5, address[0], 0}, address[1:]...)) != diag.ErrNone {
+		return diag.ErrPacketSendFailed
 	}
 	if address[0] != socks5.Succeeded {
-		h.SendClose(conn.ID, mux.ErrNone)
-		return mux.ErrNone
+		h.SendClose(conn.ID, diag.ErrNone)
+		return diag.ErrNone
 	}
 	err = h.relayAgentUDP(conn, d, socket)
 	if err != nil && !errors.Is(err, net.ErrClosed) {
-		h.ReportError(conn.ID, mux.ErrorCode(err))
+		h.ReportError(conn.ID, diag.ErrorCode(err))
 	}
-	h.SendClose(conn.ID, mux.ErrNone)
-	return mux.ErrNone
+	h.SendClose(conn.ID, diag.ErrNone)
+	return diag.ErrNone
 }
 
 func (h *SocksHandler) relayAgentUDP(c *mux.Connection, d *mux.Datagrams, socket netenv.UDPConn) (result error) {
@@ -93,7 +94,7 @@ func (h *SocksHandler) relayAgentUDP(c *mux.Connection, d *mux.Datagrams, socket
 			if len(packet) > mux.MaxDatagramSize {
 				continue
 			} // complete SOCKS packet must fit the client UDP payload
-			if err = d.Send(packet); err != nil && !errors.Is(err, mux.ErrDatagramDropped) {
+			if err = d.Send(packet); err != nil && !errors.Is(err, diag.ErrDatagramDropped) {
 				finished <- err
 				c.Close()
 				return
@@ -112,7 +113,7 @@ func (h *SocksHandler) relayAgentUDP(c *mux.Connection, d *mux.Datagrams, socket
 			return err
 		}
 		target, header, code := socks5.ExtractUDPHeader(packet)
-		if code != mux.ErrNone {
+		if code != diag.ErrNone {
 			continue
 		}
 		ctx, cancel := socketSetupContext(h.Ctx, c.Closed)
@@ -149,6 +150,6 @@ func (h *SocksHandler) relayAgentUDP(c *mux.Connection, d *mux.Datagrams, socket
 // before closing TCP. A nonzero tunnel CLOSE would discard that accepted reply.
 func (h *SocksHandler) failUDPAssociate(c *mux.Connection, code byte) byte {
 	h.SendError(c, code)
-	h.SendClose(c.ID, mux.ErrNone)
-	return mux.ErrNone
+	h.SendClose(c.ID, diag.ErrNone)
+	return diag.ErrNone
 }

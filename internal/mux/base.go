@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"proxyblob/internal/diag"
 	"sync"
 	"time"
 
@@ -138,7 +139,7 @@ func (h *BaseHandler) ReceiveLoop() {
 	// Contain it and tear down only this handler.
 	defer func() {
 		if r := recover(); r != nil {
-			h.ReportError(uuid.Nil, byte(ErrReceivePanic))
+			h.ReportError(uuid.Nil, byte(diag.ErrReceivePanic))
 			h.Stop()
 		}
 	}()
@@ -194,7 +195,7 @@ func (h *BaseHandler) ReceiveLoop() {
 			for {
 				packet, consumed, perr := ParseNext(acc[offset:])
 				if perr != nil {
-					if errors.Is(perr, ErrShortPacket) {
+					if errors.Is(perr, diag.ErrShortPacket) {
 						// Nothing was consumed: the trailing bytes are the head of a
 						// record whose tail has not arrived yet. Keep them.
 						break
@@ -204,14 +205,14 @@ func (h *BaseHandler) ReceiveLoop() {
 					// no resync point, and the uuid in a bogus header is garbage, so
 					// closing "just that connection" would target a random one while
 					// the stream stayed misaligned. Tear the handler down.
-					h.ReportError(uuid.Nil, ErrorCode(perr))
+					h.ReportError(uuid.Nil, diag.ErrorCode(perr))
 					h.Stop()
 					return
 				}
 				offset += consumed
 
 				errCode := h.handlePacket(packet)
-				if errCode != ErrNone {
+				if errCode != diag.ErrNone {
 					if h.Ctx.Err() != nil {
 						break
 					}
@@ -255,7 +256,7 @@ func (h *BaseHandler) ReceiveLoop() {
 			// Transient error: exponential backoff (100ms, 200ms, 400ms, ... capped at 5s)
 			consecutiveErrors++
 			if consecutiveErrors >= maxConsecutiveErrors {
-				h.ReportError(uuid.Nil, ErrorCode(err))
+				h.ReportError(uuid.Nil, diag.ErrorCode(err))
 				h.Stop()
 				return
 			}
@@ -295,7 +296,7 @@ func (h *BaseHandler) handlePacket(packet *Packet) byte {
 		}
 		if v, ok := h.Connections.Load(packet.ConnectionID); ok {
 			if err := v.(*Connection).setPeerWindow(window); err != nil {
-				return ErrInvalidState
+				return diag.ErrInvalidState
 			}
 		}
 		return h.PacketHandler.OnAck(packet.ConnectionID, packet.Data)
@@ -305,7 +306,7 @@ func (h *BaseHandler) handlePacket(packet *Packet) byte {
 		return h.PacketHandler.OnData(packet.ConnectionID, packet.Data)
 	case CmdEOF:
 		if len(packet.Data) != 0 {
-			return ErrInvalidPacket
+			return diag.ErrInvalidPacket
 		}
 		return h.FinishConnection(packet.ConnectionID)
 	case CmdClose:
@@ -314,11 +315,11 @@ func (h *BaseHandler) handlePacket(packet *Packet) byte {
 		// framing: the length prefix was intact and the byte stream is still in
 		// sync, so it must not tear down the whole handler.
 		if len(packet.Data) != 1 {
-			return ErrInvalidPacket
+			return diag.ErrInvalidPacket
 		}
 		return h.PacketHandler.OnClose(packet.ConnectionID, packet.Data[0])
 	default:
-		return ErrInvalidCommand
+		return diag.ErrInvalidCommand
 	}
 }
 
@@ -339,20 +340,20 @@ func (h *BaseHandler) SendConnAck(connectionID uuid.UUID) byte {
 func (h *BaseHandler) SendData(connectionID uuid.UUID, data []byte) byte {
 	// Verify connection exists
 	if _, exists := h.Connections.Load(connectionID); !exists {
-		return ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 
 	if _, err := h.sendBytes(connectionID, data, nil); err != nil {
-		return ErrPacketSendFailed
+		return diag.ErrPacketSendFailed
 	}
-	return ErrNone
+	return diag.ErrNone
 }
 
 // SendClose sends a connection termination packet with an error code.
 func (h *BaseHandler) SendClose(connectionID uuid.UUID, errCode byte) byte {
 	connObj, exists := h.Connections.LoadAndDelete(connectionID)
 	if !exists {
-		return ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	conn := connObj.(*Connection)
 
@@ -381,10 +382,10 @@ func (h *BaseHandler) CloseAllConnections() {
 func (h *BaseHandler) FinishConnection(id uuid.UUID) byte {
 	value, ok := h.Connections.Load(id)
 	if !ok {
-		return ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	value.(*Connection).FinishDelivery()
-	return ErrNone
+	return diag.ErrNone
 }
 
 // DrainTimeout bounds cleanup after tunnel EOF. It is not a flow-control or
@@ -412,12 +413,12 @@ func (h *BaseHandler) drainReceived(readErr error) {
 	case <-done:
 		if h.writerDone != nil {
 			if err := h.Drain(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				h.ReportError(uuid.Nil, byte(ErrWriteDrain))
+				h.ReportError(uuid.Nil, byte(diag.ErrWriteDrain))
 			}
 		}
 	case <-ctx.Done():
 		if !errors.Is(ctx.Err(), context.Canceled) {
-			h.ReportError(uuid.Nil, byte(ErrDeliveryDrain))
+			h.ReportError(uuid.Nil, byte(diag.ErrDeliveryDrain))
 		}
 	}
 }
@@ -443,13 +444,13 @@ func (h *BaseHandler) WaitWriter(ctx context.Context) error {
 func (h *BaseHandler) PeerClose(id uuid.UUID, code byte) byte {
 	value, ok := h.Connections.Load(id)
 	if !ok {
-		return ErrNone
+		return diag.ErrNone
 	}
 	c := value.(*Connection)
-	if code != ErrNone {
+	if code != diag.ErrNone {
 		c.Close()
 		h.Connections.Delete(id)
-		return ErrNone
+		return diag.ErrNone
 	}
 	c.peerCloseOnce.Do(func() {
 		go func() {
@@ -458,20 +459,20 @@ func (h *BaseHandler) PeerClose(id uuid.UUID, code byte) byte {
 			select {
 			case <-c.Closed:
 			case <-timer.C:
-				h.ReportError(id, byte(ErrPeerDrain))
+				h.ReportError(id, byte(diag.ErrPeerDrain))
 				c.Close()
 				h.Connections.CompareAndDelete(id, c)
 			}
 		}()
 	})
 	c.FinishDelivery()
-	return ErrNone
+	return diag.ErrNone
 }
 
 func (h *BaseHandler) badHandshake(err error) byte {
-	h.ReportError(uuid.Nil, ErrorCode(err))
+	h.ReportError(uuid.Nil, diag.ErrorCode(err))
 	h.Cancel()
-	return ErrInvalidPacket
+	return diag.ErrInvalidPacket
 }
 
 func (h *BaseHandler) rejectStream(id uuid.UUID, code byte) {

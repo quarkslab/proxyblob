@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/mux"
 	"sync"
 	"time"
@@ -119,7 +120,7 @@ func (s *ProxyServer) Stop() {
 // OnNew handles new connection requests. The server is the only one initiating
 // connections, so this always returns ErrUnexpectedPacket.
 func (s *ProxyServer) OnNew(connectionID uuid.UUID, data []byte) byte {
-	return mux.ErrUnexpectedPacket
+	return diag.ErrUnexpectedPacket
 }
 
 // OnAck processes connection acknowledgments from agents.
@@ -127,22 +128,22 @@ func (s *ProxyServer) OnNew(connectionID uuid.UUID, data []byte) byte {
 func (s *ProxyServer) OnAck(connectionID uuid.UUID, data []byte) byte {
 	value, ok := s.Connections.Load(connectionID)
 	if !ok {
-		return mux.ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	conn := value.(*mux.Connection)
 
 	// Check if connection already established (ProtocolConn should be nil for new connections)
 	if conn.ProtocolConn() != nil {
-		return mux.ErrInvalidState
+		return diag.ErrInvalidState
 	}
 
 	// Create the virtual protocol connection (marks connection as established)
 	if !conn.SetProtocolConn(mux.NewProtocolConn(s.Ctx, connectionID, s.BaseHandler)) {
-		return mux.ErrConnectionClosed
+		return diag.ErrConnectionClosed
 	}
 	conn.StartDelivery()
 
-	return mux.ErrNone
+	return diag.ErrNone
 }
 
 // OnData processes data received from agents and forwards it to the client.
@@ -150,7 +151,7 @@ func (s *ProxyServer) OnAck(connectionID uuid.UUID, data []byte) byte {
 func (s *ProxyServer) OnData(connectionID uuid.UUID, data []byte) byte {
 	value, ok := s.Connections.Load(connectionID)
 	if !ok {
-		return mux.ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	conn := value.(*mux.Connection)
 
@@ -158,15 +159,15 @@ func (s *ProxyServer) OnData(connectionID uuid.UUID, data []byte) byte {
 	// virtual protocol connection. Dropping the payload here would be silent
 	// data loss, so report the unexpected state instead.
 	if conn.ProtocolConn() == nil {
-		return mux.ErrInvalidState
+		return diag.ErrInvalidState
 	}
 
 	// Delivery uses reserved memory and never blocks shared dispatch. The
 	// sender must pause before exhausting its negotiated receive credit.
 	if !conn.Deliver(data) {
-		return mux.ErrConnectionClosed
+		return diag.ErrConnectionClosed
 	}
-	return mux.ErrNone
+	return diag.ErrNone
 }
 
 // OnClose handles connection termination from agents. It cleans up the
@@ -258,7 +259,7 @@ func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Con
 
 	// 1. Initiate connection with the agent
 	errCode := s.SendNewConnection(connID)
-	if errCode != mux.ErrNone {
+	if errCode != diag.ErrNone {
 		proxyConn.Close()
 		return
 	}
@@ -268,15 +269,15 @@ func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Con
 	// on that signal rather than polling for the pointer.
 	select {
 	case <-s.Ctx.Done():
-		s.SendClose(connID, mux.ErrHandlerStopped)
+		s.SendClose(connID, diag.ErrHandlerStopped)
 		s.Connections.Delete(connID)
 		return
 	case <-proxyConn.Closed:
-		s.SendClose(connID, mux.ErrHandlerStopped)
+		s.SendClose(connID, diag.ErrHandlerStopped)
 		s.Connections.Delete(connID)
 		return
 	case <-time.After(AckTimeout):
-		s.SendClose(connID, mux.ErrTransportTimeout)
+		s.SendClose(connID, diag.ErrTransportTimeout)
 		s.Connections.Delete(connID)
 		return
 	case <-proxyConn.Established():
@@ -286,10 +287,10 @@ func (s *ProxyServer) handleConnection(listener net.Listener, clientConn net.Con
 	// Forward owns both copy lifetimes and propagates directional EOF.
 	err := mux.Forward(proxyConn.ProtocolConn(), clientConn)
 	if err == nil {
-		s.SendClose(connID, mux.ErrNone)
+		s.SendClose(connID, diag.ErrNone)
 	}
 	s.cleanupConnection(connID, clientConn, proxyConn)
 	if err != nil {
-		s.ReportError(connID, mux.StreamErrorCode(err))
+		s.ReportError(connID, diag.StreamErrorCode(err))
 	}
 }

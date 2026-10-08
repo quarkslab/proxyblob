@@ -8,6 +8,7 @@ package mux
 import (
 	"bytes"
 	"encoding/binary"
+	"proxyblob/internal/diag"
 
 	"github.com/google/uuid"
 )
@@ -108,12 +109,12 @@ func (p *Packet) Encode() []byte {
 // check on an empty payload belongs to the caller.
 func ParseNext(buf []byte) (*Packet, int, error) {
 	if len(buf) < HeaderSize {
-		return nil, 0, ErrShortPacket
+		return nil, 0, diag.ErrShortPacket
 	}
 
 	command := buf[0]
 	if command < CmdNew || command > CmdDatagram {
-		return nil, 0, ErrMalformedPacket
+		return nil, 0, diag.ErrMalformedPacket
 	}
 
 	dataLength := binary.BigEndian.Uint32(buf[CommandSize+UUIDSize : HeaderSize])
@@ -124,12 +125,12 @@ func ParseNext(buf []byte) (*Packet, int, error) {
 	// that never arrives. Rejecting oversized lengths first bounds the caller's
 	// accumulator at HeaderSize + MaxPacketDataSize.
 	if dataLength > MaxPacketDataSize {
-		return nil, 0, ErrMalformedPacket
+		return nil, 0, diag.ErrMalformedPacket
 	}
 
 	totalSize := HeaderSize + int(dataLength)
 	if len(buf) < totalSize {
-		return nil, 0, ErrShortPacket
+		return nil, 0, diag.ErrShortPacket
 	}
 
 	var id uuid.UUID

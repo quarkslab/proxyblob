@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"proxyblob/internal/bootstrap"
+	"proxyblob/internal/diag"
 	"syscall"
 	"time"
 
@@ -56,13 +57,13 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	opts = append(opts, aznet.WithContext(ctx))
 	conn, err := aznet.Dial(driver, address, opts...)
 	if err != nil {
-		reportError(mux.ErrorCode(err))
+		reportError(diag.ErrorCode(err))
 		return nil, ErrConnectionStringError
 	}
 
 	// Identity is the first message, before the record protocol starts.
 	if err := bootstrap.WriteIdentity(conn, bootstrap.LocalIdentity()); err != nil {
-		reportError(mux.ErrorCode(err))
+		reportError(diag.ErrorCode(err))
 		conn.Close()
 		return nil, ErrIdentityExchange
 	}
@@ -70,7 +71,7 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	// Create SOCKS handler with direct connection (no transport wrapper)
 	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
-		reportError(mux.ErrorCode(err))
+		reportError(diag.ErrorCode(err))
 		conn.Close()
 		return nil, ErrConnectionStringError
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/internal/diag"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,21 +48,21 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 		limit = 20
 	}
 	if len(data) > limit {
-		return nil, ErrMalformedPacket
+		return nil, diag.ErrMalformedPacket
 	}
 
 	if len(data)+HeaderSize > h.flow.BatchBytes && cmd != CmdDatagram {
-		return nil, ErrMalformedPacket
+		return nil, diag.ErrMalformedPacket
 	}
 	h.queueMu.Lock()
 	defer h.queueMu.Unlock()
 	for cmd == CmdData || cmd == CmdDatagram {
 		if cmd == CmdDatagram && (len(data) > h.flow.StreamWindow || len(data)+HeaderSize > h.flow.BatchBytes) {
-			return nil, ErrDatagramDropped
+			return nil, diag.ErrDatagramDropped
 		}
 		pending := h.pendingData[id]
 		if len(data) > h.flow.StreamWindow {
-			return nil, ErrMalformedPacket
+			return nil, diag.ErrMalformedPacket
 		}
 		if pending.bytes+len(data) <= h.flow.StreamWindow &&
 			h.dataBytes+len(data) <= h.flow.TunnelWindow &&
@@ -69,7 +70,7 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 			break
 		}
 		if cmd == CmdDatagram {
-			return nil, ErrDatagramDropped
+			return nil, diag.ErrDatagramDropped
 		}
 		space := h.dataSpace
 		h.queueMu.Unlock()
@@ -123,7 +124,7 @@ func (h *BaseHandler) enqueue(cmd byte, id uuid.UUID, data []byte, stop <-chan s
 	} else {
 		if len(h.controls) >= h.flow.ControlSlots {
 			h.Cancel()
-			return nil, ErrCapacity
+			return nil, diag.ErrCapacity
 		}
 		h.controls = append(h.controls, req)
 	}
@@ -196,9 +197,9 @@ func (h *BaseHandler) queueCredit(id uuid.UUID, consumed uint64) {
 
 func (h *BaseHandler) sendPacket(cmd byte, id uuid.UUID, data []byte) byte {
 	if _, err := h.enqueue(cmd, id, data, nil, false); err != nil {
-		return ErrHandlerStopped
+		return diag.ErrHandlerStopped
 	}
-	return ErrNone
+	return diag.ErrNone
 }
 func (h *BaseHandler) sendConfirmed(cmd byte, id uuid.UUID, data []byte, stop <-chan struct{}) error {
 	done, err := h.enqueue(cmd, id, data, stop, true)
@@ -454,7 +455,7 @@ func Forward(a, b net.Conn) error {
 		// failure from the other direction in the peer's close diagnosis.
 		for _, conn := range []net.Conn{a, b} {
 			if pc, ok := conn.(*ProtocolConn); ok {
-				pc.closeWithCode(StreamErrorCode(err))
+				pc.closeWithCode(diag.StreamErrorCode(err))
 			}
 		}
 	}

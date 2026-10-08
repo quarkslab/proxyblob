@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	socks "proxyblob/internal/agent"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
 	"testing"
@@ -48,11 +49,11 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 			for i := 0; i < 1500; i++ {
 				b := []byte{byte(i)}
 				want = append(want, b...)
-				if handler.OnData(id, b) != mux.ErrNone {
+				if handler.OnData(id, b) != diag.ErrNone {
 					t.Fatal("data rejected")
 				}
 			}
-			if handler.OnClose(id, mux.ErrNone) != mux.ErrNone {
+			if handler.OnClose(id, diag.ErrNone) != diag.ErrNone {
 				t.Fatal("close rejected")
 			}
 			got, err := io.ReadAll(pc)

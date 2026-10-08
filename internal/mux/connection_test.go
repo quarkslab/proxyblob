@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/internal/diag"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -236,12 +237,12 @@ func (h *streamHandler) Stop() { h.Abort() }
 func (h *streamHandler) OnData(id uuid.UUID, data []byte) byte {
 	value, ok := h.Connections.Load(id)
 	if !ok {
-		return ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	if !value.(*Connection).Deliver(data) {
-		return ErrConnectionClosed
+		return diag.ErrConnectionClosed
 	}
-	return ErrNone
+	return diag.ErrNone
 }
 
 type finalReadConn struct {
@@ -363,7 +364,7 @@ func TestPeerCloseForcesUnreadDrainWithError(t *testing.T) {
 		}
 		synctest.Wait()
 		start := time.Now()
-		if code := h.PeerClose(c.ID, ErrNone); code != ErrNone {
+		if code := h.PeerClose(c.ID, diag.ErrNone); code != diag.ErrNone {
 			t.Fatalf("PeerClose: %d", code)
 		}
 		<-c.Closed

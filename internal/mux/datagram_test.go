@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"proxyblob/internal/diag"
 	"testing"
 	"testing/synctest"
 
@@ -63,7 +64,7 @@ func TestDatagramCapacityDoesNotUseTCPCredit(t *testing.T) {
 		x, y := openFlow(t, a, b)
 		send, receive := x.owner.EnableDatagrams(), y.owner.EnableDatagrams()
 		// An oversized datagram cannot wait for a capacity that can never exist.
-		if err := send.Send(make([]byte, cfg.StreamWindow+1)); !errors.Is(err, ErrDatagramDropped) {
+		if err := send.Send(make([]byte, cfg.StreamWindow+1)); !errors.Is(err, diag.ErrDatagramDropped) {
 			t.Fatalf("oversize: %v", err)
 		}
 		packet := []byte{0, 0, 0, 1, 127, 0, 0, 1, 0, 9, 1}
@@ -101,11 +102,11 @@ func TestDatagramOutboundLimitIncludesInflightAndRejectsWholePackets(t *testing.
 				}
 				synctest.Wait()
 			}
-			if err = d.Send(make([]byte, 16)); !errors.Is(err, ErrDatagramDropped) {
+			if err = d.Send(make([]byte, 16)); !errors.Is(err, diag.ErrDatagramDropped) {
 				t.Fatalf("accepted beyond outbound reservation: %v", err)
 			}
 		}
-		if err = h.RegisterConnection(NewConnection(uuid.New(), h.Ctx.Done())); !errors.Is(err, ErrCapacity) {
+		if err = h.RegisterConnection(NewConnection(uuid.New(), h.Ctx.Done())); !errors.Is(err, diag.ErrCapacity) {
 			t.Fatalf("accepted fifth stream: %v", err)
 		}
 	})

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"proxyblob/internal/diag"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -56,7 +57,7 @@ type receiveHandler struct {
 
 func (h *receiveHandler) OnData(id uuid.UUID, data []byte) byte {
 	h.packets = append(h.packets, NewPacket(CmdData, id, append([]byte(nil), data...)))
-	return ErrNone
+	return diag.ErrNone
 }
 
 func (h *receiveHandler) Stop() { h.stops++; h.cancel() }

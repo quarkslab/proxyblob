@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"proxyblob/internal/diag"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,7 +25,7 @@ func (h *flowHandler) Stop() { h.Abort() }
 func (h *flowHandler) OnNew(id uuid.UUID, data []byte) byte {
 	c, err := h.AcceptConnection(id, data)
 	if err != nil {
-		return ErrInvalidState
+		return diag.ErrInvalidState
 	}
 	c.SetProtocolConn(NewProtocolConn(h.Ctx, id, h.BaseHandler))
 	return h.SendConnAck(id)
@@ -32,22 +33,22 @@ func (h *flowHandler) OnNew(id uuid.UUID, data []byte) byte {
 func (h *flowHandler) OnAck(id uuid.UUID, _ []byte) byte {
 	v, ok := h.Connections.Load(id)
 	if !ok {
-		return ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	if !v.(*Connection).SetProtocolConn(NewProtocolConn(h.Ctx, id, h.BaseHandler)) {
-		return ErrInvalidState
+		return diag.ErrInvalidState
 	}
-	return ErrNone
+	return diag.ErrNone
 }
 func (h *flowHandler) OnData(id uuid.UUID, data []byte) byte {
 	v, ok := h.Connections.Load(id)
 	if !ok {
-		return ErrConnectionNotFound
+		return diag.ErrConnectionNotFound
 	}
 	if !v.(*Connection).Deliver(data) {
-		return ErrInvalidPacket
+		return diag.ErrInvalidPacket
 	}
-	return ErrNone
+	return diag.ErrNone
 }
 func (h *flowHandler) OnClose(id uuid.UUID, code byte) byte { return h.PeerClose(id, code) }
 
@@ -86,7 +87,7 @@ func openFlow(t testing.TB, a, b *flowHandler) (*ProtocolConn, *ProtocolConn) {
 	if err := a.RegisterConnection(c); err != nil {
 		t.Fatal(err)
 	}
-	if code := a.SendNewConnection(c.ID); code != ErrNone {
+	if code := a.SendNewConnection(c.ID); code != diag.ErrNone {
 		t.Fatal(code)
 	}
 	select {
@@ -209,7 +210,7 @@ func TestFlowAggregateReservationsAndCloseWhileWaiting(t *testing.T) {
 		x, y := openFlow(t, a, b)
 		openFlow(t, a, b)
 		c := NewConnection(uuid.New(), a.Ctx.Done())
-		if !errors.Is(a.RegisterConnection(c), ErrCapacity) {
+		if !errors.Is(a.RegisterConnection(c), diag.ErrCapacity) {
 			t.Fatal("aggregate budget exceeded")
 		}
 		a.flowMu.Lock()
@@ -351,7 +352,7 @@ func TestFlowBoundedBatchesAndFairControl(t *testing.T) {
 		h.sendPacket(CmdEOF, uuid.New(), nil)
 		synctest.Wait() // writer is held at the transport, queues remain accessible
 		for i := 0; i < 12; i++ {
-			if h.sendPacket(CmdAck, uuid.New(), h.handshake()) != ErrNone {
+			if h.sendPacket(CmdAck, uuid.New(), h.handshake()) != diag.ErrNone {
 				t.Fatal("control rejected")
 			}
 		}
@@ -417,7 +418,7 @@ func TestFlowCoalescesCreditAndBoundsControlCapacity(t *testing.T) {
 		for i := 1; i < h.flow.ControlSlots; i++ {
 			h.sendPacket(CmdEOF, uuid.New(), nil)
 		}
-		if h.sendPacket(CmdEOF, uuid.New(), nil) == ErrNone {
+		if h.sendPacket(CmdEOF, uuid.New(), nil) == diag.ErrNone {
 			t.Fatal("unbounded control admission")
 		}
 		if h.Ctx.Err() == nil {
