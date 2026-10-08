@@ -2,9 +2,9 @@
 
 package agent
 
-import "proxyblob/pkg/protocol"
+import "proxyblob/internal/mux"
 
-func (h *SocksHandler) handleBind(c *protocol.Connection, _ []byte) byte {
-	h.SendError(c, protocol.ErrUnsupportedCommand)
-	return protocol.ErrUnsupportedCommand
+func (h *SocksHandler) handleBind(c *mux.Connection, _ []byte) byte {
+	h.SendError(c, mux.ErrUnsupportedCommand)
+	return mux.ErrUnsupportedCommand
 }

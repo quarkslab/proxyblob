@@ -1,4 +1,4 @@
-package protocol
+package mux
 
 import (
 	"encoding/binary"

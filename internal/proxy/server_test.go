@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 	"sync"
 	"testing"
 	"time"
@@ -149,8 +149,8 @@ func TestLocalStopNotifiesPeerAfterNew(t *testing.T) {
 	}
 	s.StopListening()
 	peer.SetReadDeadline(time.Now().Add(time.Second))
-	for _, want := range []byte{protocol.CmdNew, protocol.CmdClose} {
-		header := make([]byte, protocol.HeaderSize)
+	for _, want := range []byte{mux.CmdNew, mux.CmdClose} {
+		header := make([]byte, mux.HeaderSize)
 		if _, err := io.ReadFull(peer, header); err != nil {
 			t.Fatalf("missing peer record %d: %v", want, err)
 		}

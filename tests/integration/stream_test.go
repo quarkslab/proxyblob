@@ -7,8 +7,8 @@ import (
 	"io"
 	"net"
 	socks "proxyblob/internal/agent"
+	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
-	"proxyblob/pkg/protocol"
 	"testing"
 	"time"
 
@@ -25,8 +25,8 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 			local, peer := net.Pipe()
 			defer local.Close()
 			defer peer.Close()
-			var base *protocol.BaseHandler
-			var handler protocol.PacketHandler
+			var base *mux.BaseHandler
+			var handler mux.PacketHandler
 			if agent {
 				h := socks.NewSocksHandler(context.Background(), local)
 				base = h.BaseHandler
@@ -38,9 +38,9 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 			}
 			defer handler.Stop()
 			id := uuid.New()
-			c := protocol.NewConnection(id, base.Ctx.Done())
+			c := mux.NewConnection(id, base.Ctx.Done())
 			base.Connections.Store(id, c)
-			pc := protocol.NewProtocolConn(base.Ctx, id, base)
+			pc := mux.NewProtocolConn(base.Ctx, id, base)
 			c.SetProtocolConn(pc)
 			c.StartDelivery()
 			// Many small records must drain in order from the reserved buffer.
@@ -48,11 +48,11 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 			for i := 0; i < 1500; i++ {
 				b := []byte{byte(i)}
 				want = append(want, b...)
-				if handler.OnData(id, b) != protocol.ErrNone {
+				if handler.OnData(id, b) != mux.ErrNone {
 					t.Fatal("data rejected")
 				}
 			}
-			if handler.OnClose(id, protocol.ErrNone) != protocol.ErrNone {
+			if handler.OnClose(id, mux.ErrNone) != mux.ErrNone {
 				t.Fatal("close rejected")
 			}
 			got, err := io.ReadAll(pc)
@@ -67,10 +67,10 @@ func TestGracefulClosePreservesAcceptedDelivery(t *testing.T) {
 // multiplexed tunnel, including SOCKS negotiation and request/response FIN.
 func TestHalfCloseRequestResponse(t *testing.T) {
 	a, b := net.Pipe()
-	exerciseHalfCloseRequestResponse(t, a, b, protocol.DefaultFlowConfig())
+	exerciseHalfCloseRequestResponse(t, a, b, mux.DefaultFlowConfig())
 }
 
-func exerciseHalfCloseRequestResponse(t *testing.T, a, b net.Conn, cfg protocol.FlowConfig) {
+func exerciseHalfCloseRequestResponse(t *testing.T, a, b net.Conn, cfg mux.FlowConfig) {
 	t.Helper()
 
 	target, err := net.Listen("tcp", "127.0.0.1:0")

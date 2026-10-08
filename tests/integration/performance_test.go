@@ -8,8 +8,8 @@ import (
 	"net"
 	"os"
 	socks "proxyblob/internal/agent"
+	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
-	"proxyblob/pkg/protocol"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -87,7 +87,7 @@ func TestStorageFixedTransfer(t *testing.T) {
 
 	defer a.Close()
 	defer b.Close()
-	cfg, err := protocol.FlowConfigFromEnv()
+	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestStorageLatencyTransfer(t *testing.T) {
 	if err != nil || ms < 0 || ms > 250 {
 		t.Fatal("latency must be 0..250 ms")
 	}
-	cfg, err := protocol.FlowConfigFromEnv()
+	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}

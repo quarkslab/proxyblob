@@ -13,7 +13,7 @@ import (
 	"time"
 
 	proxy "proxyblob/internal/agent"
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 
 	"github.com/atsika/aznet"
 )
@@ -56,21 +56,21 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	opts = append(opts, aznet.WithContext(ctx))
 	conn, err := aznet.Dial(driver, address, opts...)
 	if err != nil {
-		reportError(protocol.ErrorCode(err))
+		reportError(mux.ErrorCode(err))
 		return nil, ErrConnectionStringError
 	}
 
 	// Identity is the first message, before the record protocol starts.
 	if err := bootstrap.WriteIdentity(conn, bootstrap.LocalIdentity()); err != nil {
-		reportError(protocol.ErrorCode(err))
+		reportError(mux.ErrorCode(err))
 		conn.Close()
 		return nil, ErrIdentityExchange
 	}
 
 	// Create SOCKS handler with direct connection (no transport wrapper)
-	cfg, err := protocol.FlowConfigFromEnv()
+	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
-		reportError(protocol.ErrorCode(err))
+		reportError(mux.ErrorCode(err))
 		conn.Close()
 		return nil, ErrConnectionStringError
 	}

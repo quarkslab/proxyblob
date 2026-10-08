@@ -7,8 +7,8 @@ import (
 	"context"
 	"io"
 	"net"
+	"proxyblob/internal/mux"
 	"proxyblob/internal/socks5"
-	"proxyblob/pkg/protocol"
 	"slices"
 	"time"
 
@@ -19,7 +19,7 @@ import (
 // It processes authentication, commands, and data transfer between clients
 // and remote targets. The handler is safe for concurrent use.
 type SocksHandler struct {
-	*protocol.BaseHandler
+	*mux.BaseHandler
 	udpDestinations int
 	bindTimeout     time.Duration
 }
@@ -32,7 +32,7 @@ type Option func(*SocksHandler) error
 func WithBindTimeout(d time.Duration) Option {
 	return func(h *SocksHandler) error {
 		if d <= 0 {
-			return protocol.ErrInvalidBindTimeout
+			return mux.ErrInvalidBindTimeout
 		}
 		h.bindTimeout = d
 		return nil
@@ -42,15 +42,15 @@ func WithBindTimeout(d time.Duration) Option {
 // NewSocksHandler creates a SOCKS5 handler with the given connection.
 // The connection is used for sending and receiving protocol messages.
 func NewSocksHandler(ctx context.Context, conn net.Conn, options ...Option) *SocksHandler {
-	handler, err := NewSocksHandlerWithConfig(ctx, conn, protocol.DefaultFlowConfig(), options...)
+	handler, err := NewSocksHandlerWithConfig(ctx, conn, mux.DefaultFlowConfig(), options...)
 	if err != nil {
 		panic(err)
 	}
 	return handler
 }
 
-func NewSocksHandlerWithConfig(ctx context.Context, conn net.Conn, cfg protocol.FlowConfig, options ...Option) (*SocksHandler, error) {
-	base, err := protocol.NewBaseHandlerWithConfig(ctx, conn, cfg)
+func NewSocksHandlerWithConfig(ctx context.Context, conn net.Conn, cfg mux.FlowConfig, options ...Option) (*SocksHandler, error) {
+	base, err := mux.NewBaseHandlerWithConfig(ctx, conn, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -83,64 +83,64 @@ func (h *SocksHandler) Stop() {
 func (h *SocksHandler) OnNew(connectionID uuid.UUID, data []byte) byte {
 	// Check if the connection already exists
 	if _, ok := h.Connections.Load(connectionID); ok {
-		return protocol.ErrConnectionExists
+		return mux.ErrConnectionExists
 	}
 
 	// Create new connection
 	conn, err := h.AcceptConnection(connectionID, data)
 	if err != nil {
-		return protocol.ErrInvalidState
+		return mux.ErrInvalidState
 	}
 	if h.Ctx.Err() != nil {
 		conn.Close()
 		h.Connections.Delete(conn.ID)
-		return protocol.ErrHandlerStopped
+		return mux.ErrHandlerStopped
 	}
 
 	// Create the virtual protocol connection
-	if !conn.SetProtocolConn(protocol.NewProtocolConn(h.Ctx, connectionID, h.BaseHandler)) {
-		return protocol.ErrConnectionClosed
+	if !conn.SetProtocolConn(mux.NewProtocolConn(h.Ctx, connectionID, h.BaseHandler)) {
+		return mux.ErrConnectionClosed
 	}
 	conn.StartDelivery()
 
 	// Send ACK and process in a goroutine so ReceiveLoop never blocks on aznet writes
 	go func() {
 		errCode := h.SendConnAck(connectionID)
-		if errCode != protocol.ErrNone {
-			h.SendClose(connectionID, protocol.ErrConnectionClosed)
+		if errCode != mux.ErrNone {
+			h.SendClose(connectionID, mux.ErrConnectionClosed)
 			return
 		}
 		h.processConnection(conn)
 	}()
-	return protocol.ErrNone
+	return mux.ErrNone
 }
 
 // OnAck reports ErrUnexpectedPacket as the agent only accepts incoming
 // connections and does not initiate them.
 func (h *SocksHandler) OnAck(connectionID uuid.UUID, data []byte) byte {
-	return protocol.ErrUnexpectedPacket
+	return mux.ErrUnexpectedPacket
 }
 
 // OnData admits bytes into the stream reservation without blocking dispatch.
 func (h *SocksHandler) OnData(connectionID uuid.UUID, data []byte) byte {
 	value, ok := h.Connections.Load(connectionID)
 	if !ok {
-		return protocol.ErrConnectionNotFound
+		return mux.ErrConnectionNotFound
 	}
-	conn := value.(*protocol.Connection)
+	conn := value.(*mux.Connection)
 
 	// Without a virtual protocol connection there is no reader for the payload.
 	// Dropping it would be silent data loss, so report the unexpected state.
 	if conn.ProtocolConn() == nil {
-		return protocol.ErrInvalidState
+		return mux.ErrInvalidState
 	}
 
 	// Delivery uses reserved memory and never blocks shared dispatch. The
 	// sender must pause before exhausting its negotiated receive credit.
 	if !conn.Deliver(data) {
-		return protocol.ErrConnectionClosed
+		return mux.ErrConnectionClosed
 	}
-	return protocol.ErrNone
+	return mux.ErrNone
 }
 
 // OnClose cleans up resources associated with a connection.
@@ -155,22 +155,22 @@ func (h *SocksHandler) OnClose(connectionID uuid.UUID, errorCode byte) byte {
 //  1. Authentication method negotiation
 //  2. Command processing (CONNECT, BIND, UDP ASSOCIATE)
 //  3. Data transfer between client and target
-func (h *SocksHandler) processConnection(conn *protocol.Connection) {
+func (h *SocksHandler) processConnection(conn *mux.Connection) {
 	// SOCKS protocol has 3 sequential phases
 	errCode := h.handleAuthNegotiation(conn)
-	if errCode != protocol.ErrNone {
-		h.SendClose(conn.ID, protocol.ErrNone)
+	if errCode != mux.ErrNone {
+		h.SendClose(conn.ID, mux.ErrNone)
 		return
 	}
 
 	errCode = h.handleCommand(conn)
-	if errCode != protocol.ErrNone {
-		h.SendClose(conn.ID, protocol.ErrNone)
+	if errCode != mux.ErrNone {
+		h.SendClose(conn.ID, mux.ErrNone)
 		return
 	}
 
 	errCode = h.handleDataTransfer(conn)
-	if errCode != protocol.ErrNone {
+	if errCode != mux.ErrNone {
 		h.SendClose(conn.ID, errCode)
 		return
 	}
@@ -178,25 +178,25 @@ func (h *SocksHandler) processConnection(conn *protocol.Connection) {
 
 // SendError sends a SOCKS5 error reply to the client.
 // It maps internal error codes to SOCKS5 reply codes as defined in RFC 1928.
-func (h *SocksHandler) SendError(conn *protocol.Connection, errCode byte) {
+func (h *SocksHandler) SendError(conn *mux.Connection, errCode byte) {
 	// Default to general failure
 	socksReplyCode := socks5.GeneralFailure
 
 	// Map internal error codes to SOCKS reply codes
 	switch errCode {
-	case protocol.ErrNone:
+	case mux.ErrNone:
 		socksReplyCode = socks5.Succeeded
-	case protocol.ErrNetworkUnreachable:
+	case mux.ErrNetworkUnreachable:
 		socksReplyCode = socks5.NetworkUnreachable
-	case protocol.ErrHostUnreachable:
+	case mux.ErrHostUnreachable:
 		socksReplyCode = socks5.HostUnreachable
-	case protocol.ErrConnectionRefused:
+	case mux.ErrConnectionRefused:
 		socksReplyCode = socks5.ConnectionRefused
-	case protocol.ErrTTLExpired:
+	case mux.ErrTTLExpired:
 		socksReplyCode = socks5.TTLExpired
-	case protocol.ErrUnsupportedCommand:
+	case mux.ErrUnsupportedCommand:
 		socksReplyCode = socks5.CommandNotSupported
-	case protocol.ErrAddressNotSupported:
+	case mux.ErrAddressNotSupported:
 		socksReplyCode = socks5.AddressTypeNotSupported
 	}
 
@@ -207,24 +207,24 @@ func (h *SocksHandler) SendError(conn *protocol.Connection, errCode byte) {
 
 // handleAuthNegotiation processes the client's authentication method selection.
 // Currently only the NO AUTHENTICATION REQUIRED (0x00) method is supported.
-func (h *SocksHandler) handleAuthNegotiation(conn *protocol.Connection) byte {
+func (h *SocksHandler) handleAuthNegotiation(conn *mux.Connection) byte {
 	// Read SOCKS5 auth packet: [version(1)][nmethods(1)][methods(nmethods)]
 	// Use stack allocation for small fixed-size header
 	var headerBuf [2]byte
 	header := headerBuf[:]
 	if _, err := io.ReadFull(conn.ProtocolConn(), header); err != nil {
-		return protocol.ErrConnectionClosed
+		return mux.ErrConnectionClosed
 	}
 
 	// Check version
 	if header[0] != socks5.Version5 {
-		return protocol.ErrInvalidSocksVersion
+		return mux.ErrInvalidSocksVersion
 	}
 
 	// Read methods
 	nmethods := int(header[1])
 	if nmethods == 0 {
-		return protocol.ErrInvalidPacket
+		return mux.ErrInvalidPacket
 	}
 
 	// Use stack buffer for typical case (most clients send 1-2 methods)
@@ -237,23 +237,23 @@ func (h *SocksHandler) handleAuthNegotiation(conn *protocol.Connection) byte {
 		methods = make([]byte, nmethods)
 	}
 	if _, err := io.ReadFull(conn.ProtocolConn(), methods); err != nil {
-		return protocol.ErrConnectionClosed
+		return mux.ErrConnectionClosed
 	}
 
 	// Currently we only support NoAuth (0x00)
 	if !slices.Contains(methods, socks5.NoAuth) {
 		h.SendData(conn.ID, []byte{socks5.Version5, socks5.NoAcceptableMethods})
-		return protocol.ErrAuthFailed
+		return mux.ErrAuthFailed
 	}
 
 	// Send response
 	response := []byte{socks5.Version5, socks5.NoAuth}
 	errCode := h.SendData(conn.ID, response)
-	if errCode != protocol.ErrNone {
-		return protocol.ErrConnectionClosed
+	if errCode != mux.ErrNone {
+		return mux.ErrConnectionClosed
 	}
 
-	return protocol.ErrNone
+	return mux.ErrNone
 }
 
 // handleCommand processes SOCKS5 commands from the client.
@@ -264,24 +264,24 @@ func (h *SocksHandler) handleAuthNegotiation(conn *protocol.Connection) byte {
 //   - UDP ASSOCIATE (0x03): UDP relay
 //
 //   - BIND (0x02): agent-side TCP listener (native only)
-func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
+func (h *SocksHandler) handleCommand(conn *mux.Connection) byte {
 	// Read SOCKS5 command header: [version(1)][cmd(1)][rsv(1)][atyp(1)]
 	// Use stack allocation for fixed-size header
 	var headerBuf [4]byte
 	header := headerBuf[:]
 	if _, err := io.ReadFull(conn.ProtocolConn(), header); err != nil {
-		return protocol.ErrConnectionClosed
+		return mux.ErrConnectionClosed
 	}
 
 	// Check SOCKS version
 	if header[0] != socks5.Version5 {
-		h.SendError(conn, protocol.ErrInvalidSocksVersion)
-		return protocol.ErrInvalidSocksVersion
+		h.SendError(conn, mux.ErrInvalidSocksVersion)
+		return mux.ErrInvalidSocksVersion
 	}
 
 	if header[2] != 0 {
-		h.SendError(conn, protocol.ErrInvalidPacket)
-		return protocol.ErrInvalidPacket
+		h.SendError(conn, mux.ErrInvalidPacket)
+		return mux.ErrInvalidPacket
 	}
 
 	cmd := header[1]
@@ -302,24 +302,24 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 		// Read domain length first
 		var lenBuf [1]byte
 		if _, err := io.ReadFull(conn.ProtocolConn(), lenBuf[:]); err != nil {
-			return protocol.ErrConnectionClosed
+			return mux.ErrConnectionClosed
 		}
 		domainLen := int(lenBuf[0])
 		// Domain name can be up to 255 bytes, use heap allocation
 		addr = make([]byte, 1+domainLen+2) // length + domain + port
 		addr[0] = lenBuf[0]
 		if _, err := io.ReadFull(conn.ProtocolConn(), addr[1:]); err != nil {
-			return protocol.ErrConnectionClosed
+			return mux.ErrConnectionClosed
 		}
 	default:
-		h.SendError(conn, protocol.ErrAddressNotSupported)
-		return protocol.ErrAddressNotSupported
+		h.SendError(conn, mux.ErrAddressNotSupported)
+		return mux.ErrAddressNotSupported
 	}
 
 	// Read the address and port
 	if atyp != socks5.Domain {
 		if _, err := io.ReadFull(conn.ProtocolConn(), addr); err != nil {
-			return protocol.ErrConnectionClosed
+			return mux.ErrConnectionClosed
 		}
 	}
 
@@ -334,12 +334,12 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 		errCode = h.handleBind(conn, cmdData)
 	case socks5.UDPAssociate:
 		if header[2] != 0 {
-			return h.failUDPAssociate(conn, protocol.ErrInvalidPacket)
+			return h.failUDPAssociate(conn, mux.ErrInvalidPacket)
 		}
 		errCode = h.handleUDPAssociate(conn, cmdData[3:])
 	default:
-		h.SendError(conn, protocol.ErrUnsupportedCommand)
-		return protocol.ErrUnsupportedCommand
+		h.SendError(conn, mux.ErrUnsupportedCommand)
+		return mux.ErrUnsupportedCommand
 	}
 
 	return errCode
@@ -347,11 +347,11 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 
 // handleDataTransfer manages the flow of data between client and target.
 // Each command handler implements its own data transfer mechanism.
-func (h *SocksHandler) handleDataTransfer(conn *protocol.Connection) byte {
+func (h *SocksHandler) handleDataTransfer(conn *mux.Connection) byte {
 	// Each command handler takes care of data transfer
 	// Just wait for connection to be closed
 	<-conn.Closed
-	return protocol.ErrNone
+	return mux.ErrNone
 }
 
 // A setup operation belongs to both its handler and its logical stream. Stop

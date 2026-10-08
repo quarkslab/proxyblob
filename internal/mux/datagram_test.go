@@ -1,13 +1,14 @@
-package protocol
+package mux
 
 import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/google/uuid"
 	"io"
 	"testing"
 	"testing/synctest"
+
+	"github.com/google/uuid"
 )
 
 func TestDatagramSlowConsumerDropsWholePacketsWithoutBlockingTCP(t *testing.T) {

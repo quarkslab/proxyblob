@@ -3,7 +3,7 @@ package bootstrap
 import (
 	"errors"
 	"net/url"
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 	"testing"
 
 	"github.com/atsika/aznet"
@@ -11,7 +11,7 @@ import (
 
 func TestIncompleteNamespaceHasNumericError(t *testing.T) {
 	_, err := DialOptions("https://example.invalid/?proxyblob-handshake=h&h=private")
-	if !errors.Is(err, protocol.ErrBootstrapNamespace) || err.Error() != "55" {
+	if !errors.Is(err, mux.ErrBootstrapNamespace) || err.Error() != "55" {
 		t.Fatalf("unexpected namespace error %v", err)
 	}
 }

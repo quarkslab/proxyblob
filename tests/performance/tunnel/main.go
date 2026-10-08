@@ -32,8 +32,8 @@ import (
 	"time"
 
 	socks "proxyblob/internal/agent"
+	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
-	"proxyblob/pkg/protocol"
 
 	"github.com/atsika/aznet"
 	"github.com/google/uuid"
@@ -127,7 +127,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := protocol.FlowConfigFromEnv()
+	cfg, err := mux.FlowConfigFromEnv()
 	if err != nil {
 		return err
 	}
@@ -195,8 +195,8 @@ func serve(args []string) error {
 		go func() { stopped <- fmt.Errorf("agent session: %w", muxAgent(agentSession)) }()
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+	routes := http.NewServeMux()
+	routes.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
 		counts := map[string]int64{}
 		var total int64
 		for a, n := range metrics.RequestCounts() {
@@ -212,7 +212,7 @@ func serve(args []string) error {
 			"bytes_sent": metrics.GetBytesSent(), "bytes_received": metrics.GetBytesReceived(),
 		})
 	})
-	ms := &http.Server{Addr: *metricsAddr, Handler: mux}
+	ms := &http.Server{Addr: *metricsAddr, Handler: routes}
 	go ms.ListenAndServe()
 	defer ms.Close()
 

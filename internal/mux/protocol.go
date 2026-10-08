@@ -1,9 +1,9 @@
-// Package protocol implements the communication protocol between proxy server and agent.
-// It provides packet encoding/decoding and connection management.
+// Package mux multiplexes logical streams over one tunnel connection: packet
+// framing, stream setup, credit-based flow control and half-close.
 //
 // The protocol uses a binary packet format with fixed-size headers and variable-length
 // payloads. Each packet contains a command type, connection ID, and optional data.
-package protocol
+package mux
 
 import (
 	"bytes"

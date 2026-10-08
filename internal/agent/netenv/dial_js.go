@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 	"sync"
 	"syscall/js"
 	"time"
@@ -17,7 +17,7 @@ import (
 // buffer are bounded; consuming the chunk grants the next pull.
 const jsTCPChunkBytes = 64 * 1024
 
-var errJSHostProtocol = protocol.ErrJSHostProtocol
+var errJSHostProtocol = mux.ErrJSHostProtocol
 
 type jsConn struct {
 	writeMu    sync.Mutex

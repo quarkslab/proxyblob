@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"proxyblob/internal/bootstrap"
+	"proxyblob/internal/mux"
 	"proxyblob/internal/proxy"
-	"proxyblob/pkg/protocol"
 
 	"github.com/atsika/aznet"
 	"github.com/google/uuid"
@@ -104,9 +104,9 @@ func (o *Operator) acceptAgentLoop(ctx context.Context, listenerID string, state
 		agent := &AgentConnection{ID: uuid.NewString(), Conn: conn, ListenerID: listenerID,
 			Info: info, CreatedAt: time.Now(), op: o, generation: state}
 		agent.setLastSeen(agent.CreatedAt)
-		cfg, err := protocol.FlowConfigFromEnv()
+		cfg, err := mux.FlowConfigFromEnv()
 		if err != nil {
-			log.Error().Uint8("code", protocol.ErrorCode(err)).Msg(proxy.ErrorDescription(protocol.ErrorCode(err)))
+			log.Error().Uint8("code", mux.ErrorCode(err)).Msg(proxy.ErrorDescription(mux.ErrorCode(err)))
 			conn.Close()
 			continue
 		}
@@ -154,11 +154,11 @@ func (a *AgentConnection) close() error {
 		// for its writer before replacing that deadline: aznet.Close must be
 		// able to send its FIN, but no interrupted DATA write may resume.
 		if a.server != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), protocol.DrainTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), mux.DrainTimeout)
 			if err := a.server.WaitWriter(ctx); err != nil {
 				a.closeErr = err
 			} else {
-				a.closeErr = a.Conn.SetWriteDeadline(time.Now().Add(protocol.DrainTimeout))
+				a.closeErr = a.Conn.SetWriteDeadline(time.Now().Add(mux.DrainTimeout))
 			}
 			cancel()
 		}

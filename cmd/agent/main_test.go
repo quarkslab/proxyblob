@@ -4,7 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 	"testing"
 )
 
@@ -15,7 +15,7 @@ func TestAgentDiagnosticOutputIsNumeric(t *testing.T) {
 	}
 	saved := os.Stderr
 	os.Stderr = w
-	reportError(protocol.ErrorCode(errors.New("sdk URL?sig=secret")))
+	reportError(mux.ErrorCode(errors.New("sdk URL?sig=secret")))
 	os.Stderr = saved
 	w.Close()
 	output, err := io.ReadAll(r)

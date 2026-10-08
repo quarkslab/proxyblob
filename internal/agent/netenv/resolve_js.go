@@ -5,7 +5,7 @@ package netenv
 import (
 	"context"
 	"net"
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 	"strconv"
 	"syscall/js"
 	"time"
@@ -44,7 +44,7 @@ func ResolveUDPContext(parent context.Context, address string) (*net.UDPAddr, er
 	success := js.FuncOf(func(_ js.Value, args []js.Value) any {
 		ip := net.ParseIP(args[0].String())
 		if ip == nil {
-			finish(result{err: protocol.ErrJSHostProtocol})
+			finish(result{err: mux.ErrJSHostProtocol})
 		} else {
 			finish(result{ip: ip})
 		}

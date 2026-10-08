@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 	"testing"
 	"time"
 
@@ -15,20 +15,20 @@ import (
 
 func TestRemoteCloseDecodesNumericErrorWithoutChangingCleanup(t *testing.T) {
 	// The real server boundary receives a numeric code; descriptions stay here.
-	for _, code := range []byte{protocol.ErrConnectionRefused, 255, protocol.ErrNone} {
+	for _, code := range []byte{mux.ErrConnectionRefused, 255, mux.ErrNone} {
 		a, b := net.Pipe()
 		s := NewProxyServer(context.Background(), a)
-		c := protocol.NewConnection(uuid.New(), s.Ctx.Done())
+		c := mux.NewConnection(uuid.New(), s.Ctx.Done())
 		if err := s.RegisterConnection(c); err != nil {
 			t.Fatal(err)
 		}
 		var output bytes.Buffer
 		s.OnError = protocolErrorReporter(zerolog.New(&output))
 		result := s.OnClose(c.ID, code)
-		if result != protocol.ErrNone {
+		if result != mux.ErrNone {
 			t.Fatalf("close result %d", result)
 		}
-		if code == protocol.ErrNone {
+		if code == mux.ErrNone {
 			if output.Len() != 0 {
 				t.Fatalf("successful close logged an error: %s", &output)
 			}
@@ -60,7 +60,7 @@ func TestRemoteCloseDecodesNumericErrorWithoutChangingCleanup(t *testing.T) {
 }
 
 func TestProxyDescriptionsCoverLocalAndWireCodes(t *testing.T) {
-	for _, code := range []byte{protocol.ErrBufferFull, byte(protocol.ErrUnsupportedVersion), byte(protocol.ErrJSHostProtocol), byte(protocol.ErrInvalidFlowConfig)} {
+	for _, code := range []byte{mux.ErrBufferFull, byte(mux.ErrUnsupportedVersion), byte(mux.ErrJSHostProtocol), byte(mux.ErrInvalidFlowConfig)} {
 		if ErrorDescription(code) == "unknown protocol error" {
 			t.Fatalf("missing description for %d", code)
 		}
@@ -77,7 +77,7 @@ func TestRejectedVersionIsDecodedOnlyAtProxy(t *testing.T) {
 	s.OnError = protocolErrorReporter(zerolog.New(&output))
 	done := make(chan struct{})
 	go func() { s.ReceiveLoop(); close(done) }()
-	if _, err := b.Write(protocol.NewPacket(protocol.CmdNew, uuid.New(), nil).Encode()); err != nil {
+	if _, err := b.Write(mux.NewPacket(mux.CmdNew, uuid.New(), nil).Encode()); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -95,13 +95,13 @@ func TestStreamDiagnosticSeverity(t *testing.T) {
 		code  byte
 		level string
 	}{
-		{protocol.ErrStreamCanceled, "debug"},
-		{protocol.ErrConnectionClosed, "warn"},
-		{protocol.ErrTransportError, "warn"},
-		{protocol.ErrTransportTimeout, "warn"},
-		{protocol.ErrStreamReset, "debug"},
-		{protocol.ErrStreamNotConnected, "debug"},
-		{protocol.ErrStreamBrokenPipe, "debug"},
+		{mux.ErrStreamCanceled, "debug"},
+		{mux.ErrConnectionClosed, "warn"},
+		{mux.ErrTransportError, "warn"},
+		{mux.ErrTransportTimeout, "warn"},
+		{mux.ErrStreamReset, "debug"},
+		{mux.ErrStreamNotConnected, "debug"},
+		{mux.ErrStreamBrokenPipe, "debug"},
 	} {
 		var output bytes.Buffer
 		protocolErrorReporter(zerolog.New(&output))(uuid.New(), tc.code)
@@ -121,13 +121,13 @@ func TestStreamDiagnosticSeverity(t *testing.T) {
 func TestInfoLevelFiltersSocketClosuresButKeepsFailures(t *testing.T) {
 	var output bytes.Buffer
 	report := protocolErrorReporter(zerolog.New(&output).Level(zerolog.InfoLevel))
-	for _, code := range []byte{protocol.ErrStreamCanceled, protocol.ErrStreamReset, protocol.ErrStreamBrokenPipe, protocol.ErrStreamNotConnected} {
+	for _, code := range []byte{mux.ErrStreamCanceled, mux.ErrStreamReset, mux.ErrStreamBrokenPipe, mux.ErrStreamNotConnected} {
 		report(uuid.New(), code)
 	}
 	if output.Len() != 0 {
 		t.Fatalf("common socket closures leaked at info: %s", &output)
 	}
-	report(uuid.New(), protocol.ErrTransportError)
+	report(uuid.New(), mux.ErrTransportError)
 	if !bytes.Contains(output.Bytes(), []byte(`"code":22`)) {
 		t.Fatal("transport warning suppressed")
 	}

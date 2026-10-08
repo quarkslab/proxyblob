@@ -7,22 +7,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
+	"proxyblob/internal/mux"
 	"proxyblob/internal/socks5"
-	"proxyblob/pkg/protocol"
+
+	"github.com/rs/zerolog/log"
 )
 
 // OnUDPAssociate only admits once. Socket setup and I/O never block dispatch.
-func (s *ProxyServer) OnUDPAssociate(c *protocol.Connection, address []byte) byte {
+func (s *ProxyServer) OnUDPAssociate(c *mux.Connection, address []byte) byte {
 	d := c.EnableDatagrams()
 	if d == nil {
-		return protocol.ErrInvalidState
+		return mux.ErrInvalidState
 	}
 	go s.serveUDP(c, d, append([]byte(nil), address...))
-	return protocol.ErrNone
+	return mux.ErrNone
 }
-func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, request []byte) {
-	defer s.SendClose(c.ID, protocol.ErrNone)
+func (s *ProxyServer) serveUDP(c *mux.Connection, d *mux.Datagrams, request []byte) {
+	defer s.SendClose(c.ID, mux.ErrNone)
 	local, remote := c.DestinationAddresses()
 	l, ok := local.(*net.TCPAddr)
 	if !ok {
@@ -33,7 +34,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 		return
 	}
 	requested, code := socks5.ParseAddress(request)
-	if code != protocol.ErrNone {
+	if code != mux.ErrNone {
 		return
 	}
 	host, _, err := net.SplitHostPort(requested)
@@ -80,13 +81,13 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 				c.Close()
 				return
 			}
-			if n > protocol.MaxDatagramSize {
+			if n > mux.MaxDatagramSize {
 				continue
 			}
 			if !from.IP.Equal(r.IP) || sourcePort != 0 && from.Port != sourcePort {
 				continue
 			}
-			if _, _, code := socks5.ExtractUDPHeader(buf[:n]); code != protocol.ErrNone {
+			if _, _, code := socks5.ExtractUDPHeader(buf[:n]); code != mux.ErrNone {
 				continue
 			}
 			mu.Lock()
@@ -98,7 +99,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 			if !allowed {
 				continue
 			}
-			if e = d.Send(buf[:n]); e != nil && !errors.Is(e, protocol.ErrDatagramDropped) {
+			if e = d.Send(buf[:n]); e != nil && !errors.Is(e, mux.ErrDatagramDropped) {
 				finished <- e
 				c.Close()
 				socket.Close()
@@ -119,7 +120,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 		if e != nil {
 			return
 		}
-		if _, _, code := socks5.ExtractUDPHeader(packet); code != protocol.ErrNone {
+		if _, _, code := socks5.ExtractUDPHeader(packet); code != mux.ErrNone {
 			continue
 		}
 		mu.Lock()
@@ -136,7 +137,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 	}
 }
 
-func (s *ProxyServer) rejectUDPSetup(c *protocol.Connection, d *protocol.Datagrams, code byte) {
+func (s *ProxyServer) rejectUDPSetup(c *mux.Connection, d *mux.Datagrams, code byte) {
 	if d.Reject(code) != nil {
 		return
 	}

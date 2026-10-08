@@ -13,7 +13,7 @@ import (
 	"github.com/xtaci/smux"
 )
 
-// Library multiplexers replace pkg/protocol for SOCKS5 CONNECT only, so the
+// Library multiplexers replace internal/mux for SOCKS5 CONNECT only, so the
 // tunnel's multiplexing can be compared with ProxyBlob's on identical traffic.
 // Windows follow ProxyBlob's StreamWindow and frames its 32 KiB default. Library keep-alives are off: aznet already pings the session.
 

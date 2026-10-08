@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 
 	"github.com/google/uuid"
 )
@@ -21,38 +21,38 @@ import (
 // The separate Linux namespace harness tests the native client-facing proxy.
 // Here the target UDP socket and DNS are real Bun host operations.
 type udpTestPeer struct {
-	*protocol.BaseHandler
-	ready chan *protocol.Datagrams
+	*mux.BaseHandler
+	ready chan *mux.Datagrams
 }
 
 func (h *udpTestPeer) Stop()                        { h.Abort() }
-func (h *udpTestPeer) OnNew(uuid.UUID, []byte) byte { return protocol.ErrUnexpectedPacket }
+func (h *udpTestPeer) OnNew(uuid.UUID, []byte) byte { return mux.ErrUnexpectedPacket }
 func (h *udpTestPeer) OnAck(id uuid.UUID, _ []byte) byte {
 	v, ok := h.Connections.Load(id)
 	if !ok {
-		return protocol.ErrConnectionNotFound
+		return mux.ErrConnectionNotFound
 	}
-	if !v.(*protocol.Connection).SetProtocolConn(protocol.NewProtocolConn(h.Ctx, id, h.BaseHandler)) {
-		return protocol.ErrConnectionClosed
+	if !v.(*mux.Connection).SetProtocolConn(mux.NewProtocolConn(h.Ctx, id, h.BaseHandler)) {
+		return mux.ErrConnectionClosed
 	}
-	return protocol.ErrNone
+	return mux.ErrNone
 }
 func (h *udpTestPeer) OnData(id uuid.UUID, b []byte) byte {
 	v, ok := h.Connections.Load(id)
-	if !ok || !v.(*protocol.Connection).Deliver(b) {
-		return protocol.ErrConnectionClosed
+	if !ok || !v.(*mux.Connection).Deliver(b) {
+		return mux.ErrConnectionClosed
 	}
-	return protocol.ErrNone
+	return mux.ErrNone
 }
 func (h *udpTestPeer) OnClose(id uuid.UUID, code byte) byte { return h.PeerClose(id, code) }
-func (h *udpTestPeer) OnUDPAssociate(c *protocol.Connection, _ []byte) byte {
+func (h *udpTestPeer) OnUDPAssociate(c *mux.Connection, _ []byte) byte {
 	d := c.EnableDatagrams()
 	if d == nil {
-		return protocol.ErrInvalidState
+		return mux.ErrInvalidState
 	}
 	h.ready <- d
 	go d.Ready([]byte{1, 127, 0, 0, 1, 4, 56})
-	return protocol.ErrNone
+	return mux.ErrNone
 }
 func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
 	port := netenvtest.RealPeer(t, "udp")
@@ -98,17 +98,17 @@ func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
 	c.Close()
 }
 
-func udpTestControl(t *testing.T) (*udpTestPeer, *protocol.Connection) {
+func udpTestControl(t *testing.T) (*udpTestPeer, *mux.Connection) {
 	t.Helper()
 	a, b := net.Pipe()
 	agent := NewSocksHandler(context.Background(), b)
-	base := protocol.NewBaseHandler(context.Background(), a)
-	peer := &udpTestPeer{base, make(chan *protocol.Datagrams, 1)}
+	base := mux.NewBaseHandler(context.Background(), a)
+	peer := &udpTestPeer{base, make(chan *mux.Datagrams, 1)}
 	base.PacketHandler = peer
 	agent.Start("")
 	go peer.ReceiveLoop()
 	t.Cleanup(func() { peer.Stop(); agent.Stop(); a.Close(); b.Close() })
-	c := protocol.NewConnection(uuid.New(), peer.Ctx.Done())
+	c := mux.NewConnection(uuid.New(), peer.Ctx.Done())
 	if err := peer.RegisterConnection(c); err != nil {
 		t.Fatal(err)
 	}

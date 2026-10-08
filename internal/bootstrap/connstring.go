@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 
 	"github.com/atsika/aznet"
 )
@@ -82,7 +82,7 @@ func DialOptions(address string) ([]aznet.Option, error) {
 		return nil, nil
 	}
 	if h == "" || t == "" || h == t || q.Get(h) == "" || q.Get(t) == "" {
-		return nil, protocol.ErrBootstrapNamespace
+		return nil, mux.ErrBootstrapNamespace
 	}
 	return []aznet.Option{aznet.WithEndpoints(h, t)}, nil
 }

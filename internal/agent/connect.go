@@ -5,7 +5,7 @@ import (
 	"proxyblob/internal/agent/netenv"
 	"proxyblob/internal/socks5"
 
-	"proxyblob/pkg/protocol"
+	"proxyblob/internal/mux"
 )
 
 // handleConnect processes the SOCKS5 CONNECT command.
@@ -20,17 +20,17 @@ import (
 //	|  1  |  1  |  1  |  1   | Variable |    2     |
 //
 // Returns an error code indicating success or specific failure reason.
-func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) byte {
+func (h *SocksHandler) handleConnect(conn *mux.Connection, cmdData []byte) byte {
 	if len(cmdData) < 4 {
 		// Send malformed request response
 		response := []byte{socks5.Version5, socks5.GeneralFailure, 0x00, socks5.IPv4, 0, 0, 0, 0, 0, 0}
 		h.SendData(conn.ID, response)
-		return protocol.ErrAddressNotSupported
+		return mux.ErrAddressNotSupported
 	}
 
 	// Parse target address
 	target, errCode := socks5.ParseAddress(cmdData[3:])
-	if errCode != protocol.ErrNone {
+	if errCode != mux.ErrNone {
 		h.SendError(conn, errCode)
 		return errCode
 	}
@@ -41,7 +41,7 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 	cancelSetup()
 	if err != nil {
 		// Map network error to appropriate protocol error code
-		errCode = protocol.MapNetError(err)
+		errCode = mux.MapNetError(err)
 		h.SendError(conn, errCode)
 		return errCode
 	}
@@ -52,11 +52,11 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 	}
 
 	if !conn.AttachDestination(targetConn) {
-		return protocol.ErrConnectionClosed
+		return mux.ErrConnectionClosed
 	}
 
-	if h.sendTCPReply(conn, socks5.Succeeded, targetConn.LocalAddr().(*net.TCPAddr)) != protocol.ErrNone {
-		return protocol.ErrPacketSendFailed
+	if h.sendTCPReply(conn, socks5.Succeeded, targetConn.LocalAddr().(*net.TCPAddr)) != mux.ErrNone {
+		return mux.ErrPacketSendFailed
 	}
 
 	// Start data transfer
@@ -70,13 +70,13 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 //   - The connection is closed by either end
 //   - The context is canceled
 //   - An error occurs
-func (h *SocksHandler) handleTCPDataTransfer(conn *protocol.Connection, tcpConn net.Conn) byte {
-	err := protocol.Forward(tcpConn, conn.ProtocolConn())
+func (h *SocksHandler) handleTCPDataTransfer(conn *mux.Connection, tcpConn net.Conn) byte {
+	err := mux.Forward(tcpConn, conn.ProtocolConn())
 	if err != nil {
-		code := protocol.StreamErrorCode(err)
+		code := mux.StreamErrorCode(err)
 		h.SendClose(conn.ID, code)
 		return code
 	}
-	h.SendClose(conn.ID, protocol.ErrNone)
-	return protocol.ErrNone
+	h.SendClose(conn.ID, mux.ErrNone)
+	return mux.ErrNone
 }

@@ -7,9 +7,9 @@ import (
 	"io"
 	"net"
 	socks "proxyblob/internal/agent"
+	"proxyblob/internal/mux"
 	proxy "proxyblob/internal/proxy"
 	"proxyblob/internal/socks5"
-	"proxyblob/pkg/protocol"
 	"strconv"
 	"sync"
 	"testing"
@@ -295,7 +295,7 @@ func TestUDPControlCloseReleasesEndpoint(t *testing.T) {
 
 func TestUDPFiniteDestinationAndAssociationLimits(t *testing.T) {
 	a, b := net.Pipe()
-	cfg := protocol.DefaultFlowConfig()
+	cfg := mux.DefaultFlowConfig()
 	cfg.MaxStreams = 2
 	cfg.UDPDestinations = 2
 	agent, err := socks.NewSocksHandlerWithConfig(context.Background(), b, cfg)

@@ -1,5 +1,4 @@
-// Package protocol defines the communication protocol between proxy and agent.
-package protocol
+package mux
 
 import (
 	"context"
