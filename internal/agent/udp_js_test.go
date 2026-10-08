@@ -1,12 +1,13 @@
 //go:build js
 
-package proxy
+package agent
 
 import (
 	"bytes"
 	"context"
 	"io"
 	"net"
+	"proxyblob/internal/socks5"
 	"testing"
 	"time"
 
@@ -62,9 +63,9 @@ func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
 	}
 	d := <-peer.ready
 	for _, host := range []string{"127.0.0.1", "::1", "localhost"} {
-		address := UDPAddress(&net.UDPAddr{IP: net.ParseIP(host), Port: port})
+		address := socks5.UDPAddress(&net.UDPAddr{IP: net.ParseIP(host), Port: port})
 		if host == "localhost" {
-			address = append([]byte{Domain, 9}, []byte(host)...)
+			address = append([]byte{socks5.Domain, 9}, []byte(host)...)
 			address = append(address, byte(port>>8), byte(port))
 		}
 		for _, size := range []int{0, 6000} {
@@ -78,7 +79,7 @@ func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source, header, code := ExtractUDPHeader(got)
+			source, header, code := socks5.ExtractUDPHeader(got)
 			addr, e := net.ResolveUDPAddr("udp", source)
 			if code != 0 || e != nil || !addr.IP.IsLoopback() || addr.Port != port || !bytes.Equal(got[header:], payload) {
 				t.Fatalf("%s tunnel reply: %s %v", host, source, e)

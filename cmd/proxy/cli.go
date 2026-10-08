@@ -5,7 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	proxy "proxyblob/pkg/proxy/server"
+	proxy "proxyblob/internal/proxy"
 	"strconv"
 	"sync"
 	"time"

@@ -1,12 +1,13 @@
-// Package proxy implements SOCKS5 proxy functionality.
-// It implements SOCKS5 negotiation and forwarding following RFC 1928, supporting
-// CONNECT, native BIND and UDP ASSOCIATE commands with NoAuth authentication.
-package proxy
+// Package agent runs on the remote side of the tunnel. It implements SOCKS5
+// negotiation and forwarding following RFC 1928, supporting CONNECT, native
+// BIND and UDP ASSOCIATE commands with NoAuth authentication.
+package agent
 
 import (
 	"context"
 	"io"
 	"net"
+	"proxyblob/internal/socks5"
 	"proxyblob/pkg/protocol"
 	"slices"
 	"time"
@@ -179,28 +180,28 @@ func (h *SocksHandler) processConnection(conn *protocol.Connection) {
 // It maps internal error codes to SOCKS5 reply codes as defined in RFC 1928.
 func (h *SocksHandler) SendError(conn *protocol.Connection, errCode byte) {
 	// Default to general failure
-	socksReplyCode := GeneralFailure
+	socksReplyCode := socks5.GeneralFailure
 
 	// Map internal error codes to SOCKS reply codes
 	switch errCode {
 	case protocol.ErrNone:
-		socksReplyCode = Succeeded
+		socksReplyCode = socks5.Succeeded
 	case protocol.ErrNetworkUnreachable:
-		socksReplyCode = NetworkUnreachable
+		socksReplyCode = socks5.NetworkUnreachable
 	case protocol.ErrHostUnreachable:
-		socksReplyCode = HostUnreachable
+		socksReplyCode = socks5.HostUnreachable
 	case protocol.ErrConnectionRefused:
-		socksReplyCode = ConnectionRefused
+		socksReplyCode = socks5.ConnectionRefused
 	case protocol.ErrTTLExpired:
-		socksReplyCode = TTLExpired
+		socksReplyCode = socks5.TTLExpired
 	case protocol.ErrUnsupportedCommand:
-		socksReplyCode = CommandNotSupported
+		socksReplyCode = socks5.CommandNotSupported
 	case protocol.ErrAddressNotSupported:
-		socksReplyCode = AddressTypeNotSupported
+		socksReplyCode = socks5.AddressTypeNotSupported
 	}
 
 	// Build and send error response
-	response := []byte{Version5, socksReplyCode, 0x00, IPv4, 0, 0, 0, 0, 0, 0}
+	response := []byte{socks5.Version5, socksReplyCode, 0x00, socks5.IPv4, 0, 0, 0, 0, 0, 0}
 	h.SendData(conn.ID, response)
 }
 
@@ -216,7 +217,7 @@ func (h *SocksHandler) handleAuthNegotiation(conn *protocol.Connection) byte {
 	}
 
 	// Check version
-	if header[0] != Version5 {
+	if header[0] != socks5.Version5 {
 		return protocol.ErrInvalidSocksVersion
 	}
 
@@ -240,13 +241,13 @@ func (h *SocksHandler) handleAuthNegotiation(conn *protocol.Connection) byte {
 	}
 
 	// Currently we only support NoAuth (0x00)
-	if !slices.Contains(methods, NoAuth) {
-		h.SendData(conn.ID, []byte{Version5, NoAcceptableMethods})
+	if !slices.Contains(methods, socks5.NoAuth) {
+		h.SendData(conn.ID, []byte{socks5.Version5, socks5.NoAcceptableMethods})
 		return protocol.ErrAuthFailed
 	}
 
 	// Send response
-	response := []byte{Version5, NoAuth}
+	response := []byte{socks5.Version5, socks5.NoAuth}
 	errCode := h.SendData(conn.ID, response)
 	if errCode != protocol.ErrNone {
 		return protocol.ErrConnectionClosed
@@ -273,7 +274,7 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 	}
 
 	// Check SOCKS version
-	if header[0] != Version5 {
+	if header[0] != socks5.Version5 {
 		h.SendError(conn, protocol.ErrInvalidSocksVersion)
 		return protocol.ErrInvalidSocksVersion
 	}
@@ -289,15 +290,15 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 	// Read address based on address type
 	var addr []byte
 	switch atyp {
-	case IPv4:
+	case socks5.IPv4:
 		// Use stack allocation for IPv4 (6 bytes: 4 IP + 2 port)
 		var addrBuf [6]byte
 		addr = addrBuf[:]
-	case IPv6:
+	case socks5.IPv6:
 		// Use stack allocation for IPv6 (18 bytes: 16 IP + 2 port)
 		var addrBuf [18]byte
 		addr = addrBuf[:]
-	case Domain:
+	case socks5.Domain:
 		// Read domain length first
 		var lenBuf [1]byte
 		if _, err := io.ReadFull(conn.ProtocolConn(), lenBuf[:]); err != nil {
@@ -316,7 +317,7 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 	}
 
 	// Read the address and port
-	if atyp != Domain {
+	if atyp != socks5.Domain {
 		if _, err := io.ReadFull(conn.ProtocolConn(), addr); err != nil {
 			return protocol.ErrConnectionClosed
 		}
@@ -327,11 +328,11 @@ func (h *SocksHandler) handleCommand(conn *protocol.Connection) byte {
 
 	var errCode byte
 	switch cmd {
-	case Connect:
+	case socks5.Connect:
 		errCode = h.handleConnect(conn, cmdData)
-	case Bind:
+	case socks5.Bind:
 		errCode = h.handleBind(conn, cmdData)
-	case UDPAssociate:
+	case socks5.UDPAssociate:
 		if header[2] != 0 {
 			return h.failUDPAssociate(conn, protocol.ErrInvalidPacket)
 		}

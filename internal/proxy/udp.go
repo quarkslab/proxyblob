@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"proxyblob/internal/socks5"
 	"proxyblob/pkg/protocol"
-	socks "proxyblob/pkg/proxy/socks"
 )
 
 // OnUDPAssociate only admits once. Socket setup and I/O never block dispatch.
@@ -32,7 +32,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 	if !ok {
 		return
 	}
-	requested, code := socks.ParseAddress(request)
+	requested, code := socks5.ParseAddress(request)
 	if code != protocol.ErrNone {
 		return
 	}
@@ -65,7 +65,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 		socket.Close()
 	}()
 	addr := socket.LocalAddr().(*net.UDPAddr)
-	if err = d.Ready(socks.UDPAddress(addr)); err != nil {
+	if err = d.Ready(socks5.UDPAddress(addr)); err != nil {
 		return
 	}
 	var mu sync.Mutex
@@ -86,7 +86,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 			if !from.IP.Equal(r.IP) || sourcePort != 0 && from.Port != sourcePort {
 				continue
 			}
-			if _, _, code := socks.ExtractUDPHeader(buf[:n]); code != protocol.ErrNone {
+			if _, _, code := socks5.ExtractUDPHeader(buf[:n]); code != protocol.ErrNone {
 				continue
 			}
 			mu.Lock()
@@ -119,7 +119,7 @@ func (s *ProxyServer) serveUDP(c *protocol.Connection, d *protocol.Datagrams, re
 		if e != nil {
 			return
 		}
-		if _, _, code := socks.ExtractUDPHeader(packet); code != protocol.ErrNone {
+		if _, _, code := socks5.ExtractUDPHeader(packet); code != protocol.ErrNone {
 			continue
 		}
 		mu.Lock()

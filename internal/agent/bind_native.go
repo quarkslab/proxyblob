@@ -1,11 +1,12 @@
 //go:build !js
 
-package proxy
+package agent
 
 import (
 	"context"
 	"errors"
 	"net"
+	"proxyblob/internal/socks5"
 	"strconv"
 	"sync"
 
@@ -16,7 +17,7 @@ import (
 // zero are explicit wildcards. DNS is resolved once so the policy cannot change
 // between replies. The setup timeout is configurable through WithBindTimeout.
 func (h *SocksHandler) handleBind(c *protocol.Connection, data []byte) byte {
-	target, code := ParseAddress(data[3:])
+	target, code := socks5.ParseAddress(data[3:])
 	if code != protocol.ErrNone {
 		h.SendError(c, code)
 		return code
@@ -49,7 +50,7 @@ func (h *SocksHandler) handleBind(c *protocol.Connection, data []byte) byte {
 	defer closeListener()
 	stop := context.AfterFunc(ctx, closeListener)
 	defer stop()
-	if code = h.sendTCPReply(c, Succeeded, listener.Addr().(*net.TCPAddr)); code != protocol.ErrNone {
+	if code = h.sendTCPReply(c, socks5.Succeeded, listener.Addr().(*net.TCPAddr)); code != protocol.ErrNone {
 		return code
 	}
 	for {
@@ -89,7 +90,7 @@ func (h *SocksHandler) handleBind(c *protocol.Connection, data []byte) byte {
 		if !c.AttachDestination(owned) {
 			return protocol.ErrConnectionClosed
 		}
-		if code = h.sendTCPReply(c, Succeeded, remote); code != protocol.ErrNone {
+		if code = h.sendTCPReply(c, socks5.Succeeded, remote); code != protocol.ErrNone {
 			return code
 		}
 		return h.handleTCPDataTransfer(c, owned)

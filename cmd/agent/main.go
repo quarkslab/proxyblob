@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	proxy "proxyblob/internal/agent"
 	"proxyblob/pkg/protocol"
-	proxy "proxyblob/pkg/proxy/socks"
 
 	"github.com/atsika/aznet"
 )

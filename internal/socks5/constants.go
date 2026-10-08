@@ -1,5 +1,6 @@
-// Package proxy implements SOCKS5 proxy functionality.
-package proxy
+// Package socks5 is the SOCKS5 wire format (RFC 1928): protocol constants,
+// addresses and the UDP request header.
+package socks5
 
 // SOCKS protocol versions.
 const (

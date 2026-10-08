@@ -1,7 +1,8 @@
-package proxy
+package agent
 
 import (
 	"net"
+	"proxyblob/internal/socks5"
 
 	"proxyblob/pkg/protocol"
 )
@@ -21,13 +22,13 @@ import (
 func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) byte {
 	if len(cmdData) < 4 {
 		// Send malformed request response
-		response := []byte{Version5, GeneralFailure, 0x00, IPv4, 0, 0, 0, 0, 0, 0}
+		response := []byte{socks5.Version5, socks5.GeneralFailure, 0x00, socks5.IPv4, 0, 0, 0, 0, 0, 0}
 		h.SendData(conn.ID, response)
 		return protocol.ErrAddressNotSupported
 	}
 
 	// Parse target address
-	target, errCode := ParseAddress(cmdData[3:])
+	target, errCode := socks5.ParseAddress(cmdData[3:])
 	if errCode != protocol.ErrNone {
 		h.SendError(conn, errCode)
 		return errCode
@@ -53,7 +54,7 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 		return protocol.ErrConnectionClosed
 	}
 
-	if h.sendTCPReply(conn, Succeeded, targetConn.LocalAddr().(*net.TCPAddr)) != protocol.ErrNone {
+	if h.sendTCPReply(conn, socks5.Succeeded, targetConn.LocalAddr().(*net.TCPAddr)) != protocol.ErrNone {
 		return protocol.ErrPacketSendFailed
 	}
 

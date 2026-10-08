@@ -1,4 +1,4 @@
-package proxy
+package socks5
 
 import (
 	"proxyblob/pkg/protocol"

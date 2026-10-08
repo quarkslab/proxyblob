@@ -1,4 +1,3 @@
-// Package proxy implements a SOCKS proxy server.
 package proxy
 
 import (

@@ -1,6 +1,6 @@
 //go:build !js
 
-package proxy
+package agent
 
 import (
 	"errors"

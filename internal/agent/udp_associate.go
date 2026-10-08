@@ -1,9 +1,10 @@
-package proxy
+package agent
 
 import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/internal/socks5"
 	"sync"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 // The proxy owns the client endpoint. The agent only owns target-facing UDP.
 func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []byte) byte {
-	if target, code := ParseAddress(request); code != protocol.ErrNone {
+	if target, code := socks5.ParseAddress(request); code != protocol.ErrNone {
 		return h.failUDPAssociate(conn, code)
 	} else if _, _, err := net.SplitHostPort(target); err != nil {
 		return h.failUDPAssociate(conn, protocol.ErrAddressNotSupported)
@@ -45,10 +46,10 @@ func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []b
 	if err != nil {
 		return protocol.ErrConnectionClosed
 	}
-	if h.SendData(conn.ID, append([]byte{Version5, address[0], 0}, address[1:]...)) != protocol.ErrNone {
+	if h.SendData(conn.ID, append([]byte{socks5.Version5, address[0], 0}, address[1:]...)) != protocol.ErrNone {
 		return protocol.ErrPacketSendFailed
 	}
-	if address[0] != Succeeded {
+	if address[0] != socks5.Succeeded {
 		h.SendClose(conn.ID, protocol.ErrNone)
 		return protocol.ErrNone
 	}
@@ -86,7 +87,7 @@ func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagra
 			if !known {
 				continue
 			}
-			packet := append([]byte{0, 0, 0}, UDPAddress(from)...)
+			packet := append([]byte{0, 0, 0}, socks5.UDPAddress(from)...)
 			packet = append(packet, buf[:n]...)
 			if len(packet) > protocol.MaxDatagramSize {
 				continue
@@ -109,7 +110,7 @@ func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagra
 		if err != nil {
 			return err
 		}
-		target, header, code := ExtractUDPHeader(packet)
+		target, header, code := socks5.ExtractUDPHeader(packet)
 		if code != protocol.ErrNone {
 			continue
 		}

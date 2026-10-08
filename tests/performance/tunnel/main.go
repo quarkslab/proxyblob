@@ -31,9 +31,9 @@ import (
 	"syscall"
 	"time"
 
+	socks "proxyblob/internal/agent"
+	proxy "proxyblob/internal/proxy"
 	"proxyblob/pkg/protocol"
-	proxy "proxyblob/pkg/proxy/server"
-	socks "proxyblob/pkg/proxy/socks"
 
 	"github.com/atsika/aznet"
 	"github.com/google/uuid"

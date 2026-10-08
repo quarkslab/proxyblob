@@ -1,5 +1,4 @@
-// Package proxy implements SOCKS5 proxy functionality.
-package proxy
+package socks5
 
 import (
 	"encoding/binary"

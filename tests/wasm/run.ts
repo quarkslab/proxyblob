@@ -26,7 +26,7 @@ try {
   );
   const wasm = join(output, "socks.test.wasm");
   await command(
-    ["go", "test", "-mod=readonly", "-c", "-o", wasm, "./pkg/proxy/socks"],
+    ["go", "test", "-mod=readonly", "-c", "-o", wasm, "./internal/agent"],
     { ...process.env, GOOS: "js", GOARCH: "wasm" },
   );
   const require = createRequire(import.meta.url);

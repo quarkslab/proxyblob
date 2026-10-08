@@ -7,7 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
-	proxy "proxyblob/pkg/proxy/server"
+	proxy "proxyblob/internal/proxy"
 	"sync"
 	"sync/atomic"
 	"testing"

@@ -6,9 +6,9 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	socks "proxyblob/internal/agent"
+	proxy "proxyblob/internal/proxy"
 	"proxyblob/pkg/protocol"
-	proxy "proxyblob/pkg/proxy/server"
-	socks "proxyblob/pkg/proxy/socks"
 	"testing"
 	"time"
 

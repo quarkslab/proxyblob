@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-package proxy
+package agent
 
 import (
 	"bytes"
