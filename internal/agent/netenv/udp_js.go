@@ -1,6 +1,6 @@
 //go:build js
 
-package agent
+package netenv
 
 import (
 	"context"
@@ -35,8 +35,8 @@ type jsUDPConn struct {
 	dl          time.Time
 }
 
-func listenUDP() (UDPRelayConn, error) { return listenUDPContext(context.Background()) }
-func listenUDPContext(parent context.Context) (UDPRelayConn, error) {
+func ListenUDP() (UDPConn, error) { return ListenUDPContext(context.Background()) }
+func ListenUDPContext(parent context.Context) (UDPConn, error) {
 	if err := requireJSHost("UDPListen"); err != nil {
 		return nil, err
 	}

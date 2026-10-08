@@ -1,6 +1,6 @@
 //go:build js
 
-package agent
+package netenv
 
 import (
 	"context"
@@ -33,9 +33,9 @@ type jsConn struct {
 	changed    chan struct{}
 }
 
-func dialTCP(target string) (net.Conn, error) { return dialTCPContext(context.Background(), target) }
+func DialTCP(target string) (net.Conn, error) { return DialTCPContext(context.Background(), target) }
 
-func dialTCPContext(parent context.Context, target string) (net.Conn, error) {
+func DialTCPContext(parent context.Context, target string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, err

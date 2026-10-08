@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/internal/agent/netenv"
 	"proxyblob/internal/socks5"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []b
 	// A control FIN ends this association, including while setup is in flight.
 	go func() { io.Copy(io.Discard, conn.ProtocolConn()); h.SendClose(conn.ID, protocol.ErrNone) }()
 	setupCtx, cancel := socketSetupContext(h.Ctx, conn.Closed)
-	socket, err := listenUDPContext(setupCtx)
+	socket, err := netenv.ListenUDPContext(setupCtx)
 	cancel()
 	if err != nil {
 		return h.failUDPAssociate(conn, protocol.ErrNetworkUnreachable)
@@ -61,7 +62,7 @@ func (h *SocksHandler) handleUDPAssociate(conn *protocol.Connection, request []b
 	return protocol.ErrNone
 }
 
-func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagrams, socket UDPRelayConn) (result error) {
+func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagrams, socket netenv.UDPConn) (result error) {
 	// Keys are resolved IP:port pairs, never unbounded client-provided domain
 	// strings. Evict idle entries on admission; drop new destinations at capacity.
 	var mu sync.Mutex
@@ -115,7 +116,7 @@ func (h *SocksHandler) relayAgentUDP(c *protocol.Connection, d *protocol.Datagra
 			continue
 		}
 		ctx, cancel := socketSetupContext(h.Ctx, c.Closed)
-		addr, err := resolveUDPContext(ctx, target)
+		addr, err := netenv.ResolveUDPContext(ctx, target)
 		cancel()
 		if err != nil {
 			// Resolution failure drops this datagram; avoid per-packet diagnostics.

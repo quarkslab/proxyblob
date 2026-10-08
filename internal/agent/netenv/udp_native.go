@@ -1,6 +1,6 @@
 //go:build !js
 
-package agent
+package netenv
 
 import (
 	"context"
@@ -13,7 +13,7 @@ type nativeUDPConn struct {
 	conn *net.UDPConn
 }
 
-func listenUDP() (UDPRelayConn, error) {
+func ListenUDP() (UDPConn, error) {
 	c, err := net.ListenUDP("udp", &net.UDPAddr{})
 	if err != nil {
 		return nil, err
@@ -54,14 +54,14 @@ func (c *nativeUDPConn) Close() error {
 	return c.conn.Close()
 }
 
-func listenUDPContext(ctx context.Context) (UDPRelayConn, error) {
+func ListenUDPContext(ctx context.Context) (UDPConn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return listenUDP()
+	return ListenUDP()
 }
 
-func resolveUDPContext(ctx context.Context, address string) (*net.UDPAddr, error) {
+func ResolveUDPContext(ctx context.Context, address string) (*net.UDPAddr, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err

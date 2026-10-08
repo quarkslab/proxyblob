@@ -6,12 +6,13 @@ import (
 	"errors"
 	"io"
 	"net"
+	"proxyblob/internal/agent/netenv"
 	"testing"
 	"time"
 )
 
 func TestNativeUDPReportsTruncation(t *testing.T) {
-	relay, err := listenUDP()
+	relay, err := netenv.ListenUDP()
 	if err != nil {
 		t.Fatal(err)
 	}

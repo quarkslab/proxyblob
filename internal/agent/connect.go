@@ -2,6 +2,7 @@ package agent
 
 import (
 	"net"
+	"proxyblob/internal/agent/netenv"
 	"proxyblob/internal/socks5"
 
 	"proxyblob/pkg/protocol"
@@ -36,7 +37,7 @@ func (h *SocksHandler) handleConnect(conn *protocol.Connection, cmdData []byte) 
 
 	// Establish TCP connection to target (uses Bun bridge on WASM, native net on other platforms)
 	setupCtx, cancelSetup := socketSetupContext(h.Ctx, conn.Closed)
-	targetConn, err := dialTCPContext(setupCtx, target)
+	targetConn, err := netenv.DialTCPContext(setupCtx, target)
 	cancelSetup()
 	if err != nil {
 		// Map network error to appropriate protocol error code

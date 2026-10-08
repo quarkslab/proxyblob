@@ -1,6 +1,6 @@
 //go:build js
 
-package agent
+package netenv
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 
 // Literal destinations use the existing v2 host. Domain destinations require
 // its UDPResolve extension, with the same immediate disposal barrier.
-func resolveUDPContext(parent context.Context, address string) (*net.UDPAddr, error) {
+func ResolveUDPContext(parent context.Context, address string) (*net.UDPAddr, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err

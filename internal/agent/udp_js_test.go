@@ -7,12 +7,14 @@ import (
 	"context"
 	"io"
 	"net"
+	"proxyblob/internal/agent/netenv/netenvtest"
 	"proxyblob/internal/socks5"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"proxyblob/pkg/protocol"
+
+	"github.com/google/uuid"
 )
 
 // This peer runs the real multiplexed protocol against the WASM agent handler.
@@ -53,7 +55,7 @@ func (h *udpTestPeer) OnUDPAssociate(c *protocol.Connection, _ []byte) byte {
 	return protocol.ErrNone
 }
 func TestJSUDPTunnelIPv4IPv6DomainAndControlClose(t *testing.T) {
-	port := realPeer(t, "udp")
+	port := netenvtest.RealPeer(t, "udp")
 	peer, c := udpTestControl(t)
 	control := c.ProtocolConn()
 	control.Write([]byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0})
@@ -128,7 +130,7 @@ func udpTestControl(t *testing.T) (*udpTestPeer, *protocol.Connection) {
 }
 
 func TestJSUDPControlCloseCancelsPendingBind(t *testing.T) {
-	state := testJSHost(t, "pending")
+	state := netenvtest.Host(t, "pending")
 	_, c := udpTestControl(t)
 	control := c.ProtocolConn()
 	if _, err := control.Write([]byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
@@ -150,5 +152,5 @@ func TestJSUDPControlCloseCancelsPendingBind(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	assertDisposed(t, state)
+	netenvtest.AssertDisposed(t, state)
 }

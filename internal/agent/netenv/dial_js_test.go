@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-package agent
+package netenv
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"proxyblob/internal/agent/netenv/netenvtest"
 	"proxyblob/pkg/protocol"
 	"strconv"
 	"syscall/js"
@@ -16,69 +17,13 @@ import (
 	"time"
 )
 
-// This deterministic host drives the real setup boundary in Bun and Node.
-// All dispatch consults one detachable callback table, including queued events.
-func testJSHost(t *testing.T, mode string) js.Value {
-	t.Helper()
-	f := js.Global().Get("Function").New(`return (() => {
- let callbacks, probes=[], disposed=0, reads=0, ends=0;
- const state={mode:"connect",payload:"",writeCount:4};
- const socket={write:b=>state.writeCount,end:()=>ends++,send:()=>true};
- const handle={dispose(){if(callbacks){callbacks=undefined;disposed++}},
- read(n){reads++;if(state.payload){queueMicrotask(()=>{if(callbacks){const b=new TextEncoder().encode(state.payload);callbacks[1](socket,b);callbacks[2]()}})}}};
- function emit(i,...args){queueMicrotask(()=>callbacks?.[i](...args))}
- function start(c){callbacks=c;probes=c.slice();queueMicrotask(()=>{if(!callbacks)return;
- if(state.mode==="connect")callbacks[0](socket,12345);
- if(state.mode==="close")callbacks[2]();
- if(state.mode==="error")callbacks[c.length===3?2:3]("setup failure");
- });return handle}
- state.tcp=(host,port,...c)=>start(c);state.udp=(...c)=>start(c);
- // Diagnostic references are never dispatched as socket events. Probing them
- // after detachment checks the real Go callback registry has released each id.
- state.released=()=>{let count=0;const old=console.error;console.error=(message)=>{if(message==="call to released function")count++};
- try{for(const f of probes)f(socket,new Uint8Array(1),12345,"127.0.0.1")}finally{console.error=old}return count};
- state.flush=done=>queueMicrotask(done);state.emit=emit;state.socket=socket;state.counts=()=>({disposed,reads,ends,callbacks:callbacks?.length??0,expected:probes.length});
- return state;
- })()`)
-	state := f.Invoke()
-	state.Set("mode", mode)
-	tcp, udp, version := js.Global().Get("TCPDial"), js.Global().Get("UDPListen"), js.Global().Get("ProxyBlobSocketHostVersion")
-	js.Global().Set("TCPDial", state.Get("tcp"))
-	js.Global().Set("UDPListen", state.Get("udp"))
-	js.Global().Set("ProxyBlobSocketHostVersion", 2)
-	t.Cleanup(func() {
-		js.Global().Set("TCPDial", tcp)
-		js.Global().Set("UDPListen", udp)
-		js.Global().Set("ProxyBlobSocketHostVersion", version)
-	})
-	return state
-}
-func flushJSHost(state js.Value) {
-	done := make(chan struct{})
-	callback := js.FuncOf(func(js.Value, []js.Value) any { close(done); return nil })
-	state.Call("flush", callback)
-	<-done
-	callback.Release()
-}
-
-func assertDisposed(t *testing.T, state js.Value) {
-	t.Helper()
-	counts := state.Call("counts")
-	if counts.Get("disposed").Int() != 1 || counts.Get("callbacks").Int() != 0 {
-		t.Fatalf("cleanup: %s", js.Global().Get("JSON").Call("stringify", counts))
-	}
-	if got := state.Call("released").Int(); got != counts.Get("expected").Int() {
-		t.Fatalf("callback release count: %d", got)
-	}
-}
-
 func TestJSCallbacksReleasedAfterHostDetachment(t *testing.T) {
 	for _, udp := range []bool{false, true} {
 		t.Run(strconv.FormatBool(udp), func(t *testing.T) {
-			state := testJSHost(t, "connect")
+			state := netenvtest.Host(t, "connect")
 			count := 5
 			if udp {
-				c, err := listenUDP()
+				c, err := ListenUDP()
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -86,14 +31,14 @@ func TestJSCallbacksReleasedAfterHostDetachment(t *testing.T) {
 				c.Close()
 				count = 3
 			} else {
-				c, err := dialTCP("127.0.0.1:80")
+				c, err := DialTCP("127.0.0.1:80")
 				if err != nil {
 					t.Fatal(err)
 				}
 				c.Close()
 				c.Close()
 			}
-			assertDisposed(t, state)
+			netenvtest.AssertDisposed(t, state)
 			if got := state.Call("released").Int(); got != count {
 				t.Fatalf("released %d callbacks, want %d", got, count)
 			}
@@ -102,31 +47,31 @@ func TestJSCallbacksReleasedAfterHostDetachment(t *testing.T) {
 }
 
 func TestJSCloseBeforeConnectReturns(t *testing.T) {
-	state := testJSHost(t, "close")
+	state := netenvtest.Host(t, "close")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	c, err := dialTCPContext(ctx, "127.0.0.1:80")
+	c, err := DialTCPContext(ctx, "127.0.0.1:80")
 	if c != nil || !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("close before connect: %v %v", c, err)
 	}
-	assertDisposed(t, state)
+	netenvtest.AssertDisposed(t, state)
 	state.Call("emit", 0, state.Get("socket"))
 	state.Call("emit", 3, "late error")
-	flushJSHost(state)
-	assertDisposed(t, state)
+	netenvtest.Flush(state)
+	netenvtest.AssertDisposed(t, state)
 }
 func TestJSSetupErrorAndCancellation(t *testing.T) {
 	for _, udp := range []bool{false, true} {
 		for _, mode := range []string{"error", "pending"} {
 			t.Run(strconv.FormatBool(udp)+mode, func(t *testing.T) {
-				state := testJSHost(t, mode)
+				state := netenvtest.Host(t, mode)
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 				defer cancel()
 				var err error
 				if udp {
-					_, err = listenUDPContext(ctx)
+					_, err = ListenUDPContext(ctx)
 				} else {
-					_, err = dialTCPContext(ctx, "127.0.0.1:80")
+					_, err = DialTCPContext(ctx, "127.0.0.1:80")
 				}
 				if err == nil {
 					t.Fatal("setup succeeded")
@@ -134,19 +79,19 @@ func TestJSSetupErrorAndCancellation(t *testing.T) {
 				if mode == "pending" && !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatal(err)
 				}
-				assertDisposed(t, state)
+				netenvtest.AssertDisposed(t, state)
 				state.Call("emit", 0, state.Get("socket"), 12345)
-				flushJSHost(state)
-				assertDisposed(t, state)
+				netenvtest.Flush(state)
+				netenvtest.AssertDisposed(t, state)
 			})
 		}
 	}
 }
 func TestJSPeerEOFLeavesWritesOpen(t *testing.T) {
-	state := testJSHost(t, "connect")
+	state := netenvtest.Host(t, "connect")
 	state.Set("payload", "trailing")
 	state.Set("writeCount", 8)
-	conn, err := dialTCP("127.0.0.1:80")
+	conn, err := DialTCP("127.0.0.1:80")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,12 +114,12 @@ func TestJSPeerEOFLeavesWritesOpen(t *testing.T) {
 	}
 	c.Close()
 	c.Close()
-	assertDisposed(t, state)
+	netenvtest.AssertDisposed(t, state)
 }
 func TestJSLocalEOFLeavesReadsOpen(t *testing.T) {
-	state := testJSHost(t, "connect")
+	state := netenvtest.Host(t, "connect")
 	state.Set("payload", "response")
-	conn, err := dialTCP("127.0.0.1:80")
+	conn, err := DialTCP("127.0.0.1:80")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,9 +138,9 @@ func TestJSShortWritesAndUnsupportedDeadlines(t *testing.T) {
 		err   error
 	}{{"short", 2, 2, io.ErrShortWrite}, {"zero", 0, 0, io.ErrShortWrite}, {"unknown", nil, 0, errors.ErrUnsupported}} {
 		t.Run(tc.name, func(t *testing.T) {
-			state := testJSHost(t, "connect")
+			state := netenvtest.Host(t, "connect")
 			state.Set("writeCount", tc.count)
-			c, err := dialTCP("127.0.0.1:80")
+			c, err := DialTCP("127.0.0.1:80")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,8 +158,8 @@ func TestJSShortWritesAndUnsupportedDeadlines(t *testing.T) {
 	}
 }
 func TestJSErrorAfterConnectDisposesAndUnblocksRead(t *testing.T) {
-	state := testJSHost(t, "connect")
-	c, err := dialTCP("127.0.0.1:80")
+	state := netenvtest.Host(t, "connect")
+	c, err := DialTCP("127.0.0.1:80")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,30 +176,30 @@ func TestJSErrorAfterConnectDisposesAndUnblocksRead(t *testing.T) {
 		t.Fatal("read blocked")
 	}
 	c.Close()
-	assertDisposed(t, state)
+	netenvtest.AssertDisposed(t, state)
 }
 func TestJSTCPRejectsUncreditedOrOversizedData(t *testing.T) {
 	for _, size := range []int{1, jsTCPChunkBytes + 1} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
-			state := testJSHost(t, "connect")
-			c, err := dialTCP("127.0.0.1:80")
+			state := netenvtest.Host(t, "connect")
+			c, err := DialTCP("127.0.0.1:80")
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer c.Close()
 			state.Call("emit", 1, state.Get("socket"), js.Global().Get("Uint8Array").New(size))
-			flushJSHost(state)
+			netenvtest.Flush(state)
 			_, err = c.Read(make([]byte, 1))
 			if !errors.Is(err, errJSHostProtocol) {
 				t.Fatal(err)
 			}
-			assertDisposed(t, state)
+			netenvtest.AssertDisposed(t, state)
 		})
 	}
 }
 func TestJSUDPBoundsDeadlineAndError(t *testing.T) {
-	state := testJSHost(t, "connect")
-	relay, err := listenUDP()
+	state := netenvtest.Host(t, "connect")
+	relay, err := ListenUDP()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +209,7 @@ func TestJSUDPBoundsDeadlineAndError(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		state.Call("emit", 1, state.Get("socket"), js.Global().Get("Uint8Array").New(65507), 9, "127.0.0.1")
 	}
-	flushJSHost(state)
+	netenvtest.Flush(state)
 	for i := 0; i < 4; i++ {
 		if n, _, err := c.ReadFrom(make([]byte, 65507)); n != 65507 || err != nil {
 			t.Fatalf("datagram: %d %v", n, err)
@@ -293,15 +238,15 @@ func TestJSUDPBoundsDeadlineAndError(t *testing.T) {
 		t.Fatal("error did not interrupt read")
 	}
 	c.Close()
-	assertDisposed(t, state)
+	netenvtest.AssertDisposed(t, state)
 }
 func TestJSLegacyHostRejectedBeforeSetup(t *testing.T) {
-	state := testJSHost(t, "connect")
+	state := netenvtest.Host(t, "connect")
 	js.Global().Set("ProxyBlobSocketHostVersion", 1)
-	if _, err := dialTCP("127.0.0.1:80"); !errors.Is(err, errors.ErrUnsupported) {
+	if _, err := DialTCP("127.0.0.1:80"); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatal(err)
 	}
-	if _, err := listenUDP(); !errors.Is(err, errors.ErrUnsupported) {
+	if _, err := ListenUDP(); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatal(err)
 	}
 	if state.Call("counts").Get("callbacks").Int() != 0 {
@@ -309,18 +254,10 @@ func TestJSLegacyHostRejectedBeforeSetup(t *testing.T) {
 	}
 }
 
-func realPeer(t *testing.T, name string) int {
-	t.Helper()
-	v := js.Global().Get("ProxyBlobTestPeers")
-	if v.IsUndefined() {
-		t.Skip("requires Bun loopback harness")
-	}
-	return v.Get(name).Int()
-}
 func realTCP(t *testing.T, name string) net.Conn {
 	t.Helper()
-	port := realPeer(t, name)
-	c, err := dialTCP(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	port := netenvtest.RealPeer(t, name)
+	c, err := DialTCP(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,8 +329,8 @@ func TestJSLoopbackSlowReaderByteIdentity(t *testing.T) {
 	}
 }
 func TestJSLoopbackUDP(t *testing.T) {
-	port := realPeer(t, "udp")
-	c, err := listenUDP()
+	port := netenvtest.RealPeer(t, "udp")
+	c, err := ListenUDP()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,9 +352,9 @@ func TestJSLoopbackUDP(t *testing.T) {
 func TestJSWriteBackpressureAndCancellation(t *testing.T) {
 	for _, abort := range []bool{false, true} {
 		t.Run(strconv.FormatBool(abort), func(t *testing.T) {
-			state := testJSHost(t, "connect")
+			state := netenvtest.Host(t, "connect")
 			state.Set("writeCount", "would-block")
-			c, err := dialTCP("127.0.0.1:80")
+			c, err := DialTCP("127.0.0.1:80")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -431,7 +368,7 @@ func TestJSWriteBackpressureAndCancellation(t *testing.T) {
 				result <- e
 			}()
 			// Barrier: on a stalled write no completion is allowed before readiness.
-			flushJSHost(state)
+			netenvtest.Flush(state)
 			select {
 			case err := <-result:
 				t.Fatalf("write completed before readiness: %v", err)
@@ -452,7 +389,7 @@ func TestJSWriteBackpressureAndCancellation(t *testing.T) {
 				t.Fatal("write did not wake")
 			}
 			c.Close()
-			assertDisposed(t, state)
+			netenvtest.AssertDisposed(t, state)
 		})
 	}
 }
@@ -485,14 +422,14 @@ func TestJSLoopbackSlowWriterByteIdentity(t *testing.T) {
 }
 
 func TestJSUDPReportsTruncationAndWriteRefusal(t *testing.T) {
-	state := testJSHost(t, "connect")
-	socket, err := listenUDP()
+	state := netenvtest.Host(t, "connect")
+	socket, err := ListenUDP()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer socket.Close()
 	state.Call("emit", 1, state.Get("socket"), js.Global().Get("Uint8Array").New(16), 9, "127.0.0.1")
-	flushJSHost(state)
+	netenvtest.Flush(state)
 	n, _, err := socket.ReadFrom(make([]byte, 1))
 	if n != 1 || !errors.Is(err, io.ErrShortBuffer) {
 		t.Fatalf("silent truncation: %d %v", n, err)
@@ -505,8 +442,8 @@ func TestJSUDPReportsTruncationAndWriteRefusal(t *testing.T) {
 }
 
 func TestJSSetupFailureDoesNotCarryHostMessage(t *testing.T) {
-	testJSHost(t, "error") // host reports the text "setup failure"
-	conn, err := dialTCPContext(context.Background(), "127.0.0.1:9")
+	netenvtest.Host(t, "error") // host reports the text "setup failure"
+	conn, err := DialTCPContext(context.Background(), "127.0.0.1:9")
 	if conn != nil || !errors.Is(err, protocol.Error(protocol.ErrTransportError)) || err.Error() != "22" {
 		t.Fatalf("unsanitized host failure: %v", err)
 	}

@@ -1,14 +1,17 @@
-package agent
+// Package netenv is the agent's network access: TCP dialing and UDP sockets,
+// implemented with Go's net package natively and through the JS socket host
+// when the agent runs as WebAssembly.
+package netenv
 
 import (
 	"net"
 	"time"
 )
 
-// UDPRelayConn is a UDP socket that can send and receive datagrams to/from
+// UDPConn is a UDP socket that can send and receive datagrams to/from
 // arbitrary addresses. Used by the SOCKS5 UDP ASSOCIATE handler.
 // Implementations must be safe for concurrent use.
-type UDPRelayConn interface {
+type UDPConn interface {
 	// LocalPort returns the port this socket is bound to.
 	LocalPort() int
 

@@ -1,6 +1,6 @@
 //go:build js
 
-package agent
+package netenv
 
 import (
 	"errors"

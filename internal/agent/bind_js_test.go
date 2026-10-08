@@ -5,12 +5,13 @@ package agent
 import (
 	"bytes"
 	"io"
+	"proxyblob/internal/agent/netenv/netenvtest"
 	"testing"
 )
 
 func TestJSBINDReturnsUnsupportedWithoutHostAllocation(t *testing.T) {
 	// The host has only the existing socket API; BIND must not call even that API.
-	state := testJSHost(t, "pending")
+	state := netenvtest.Host(t, "pending")
 	_, c := udpTestControl(t)
 	control := c.ProtocolConn()
 	if _, err := control.Write([]byte{5, 2, 0, 1, 127, 0, 0, 1, 0, 0}); err != nil {
