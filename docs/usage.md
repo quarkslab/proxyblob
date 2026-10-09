@@ -45,7 +45,7 @@ The resulting binary contains the credential; keep it private.
 
 ## WASM agent with Bun
 
-Install Bun **1.4.2**, which the included host requires. From the repository root:
+Install Bun **1.4 or later**, which the included host requires. From the repository root:
 
 ```sh
 make wasm

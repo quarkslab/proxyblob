@@ -1,5 +1,14 @@
 # Changelog
 
+**ProxyBlob v2.4 - 09/10/2026:**
+
+- Faster bulk transfers: about 3.5× on Blob and Table and 1.8× on Queue, with about 75% fewer storage requests per MiB on Blob.
+- New connections take two tunnel round trips instead of three; malformed or unsupported SOCKS requests are answered by the proxy without tunnel traffic.
+- Lower latency on an idle tunnel for most storage backends.
+- Tuning: added `PROXYBLOB_MAX_STREAM_WINDOW`, `PROXYBLOB_WRITE_BUFFER` and `PROXYBLOB_WRITE_CHUNKS`; removed `PROXYBLOB_BATCH_BYTES`.
+- Reorganized the code by role under `internal/` (operator, proxy, agent, relay, mux, SOCKS5 codec): SOCKS5 is now handled entirely by the proxy, and the agent only relays connections.
+- v2.4 proxies and agents cannot connect to v2.3 ones: update both, and the Bun example files for WASM agents, at the same time. See the [upgrade notes](docs/usage.md#upgrading).
+
 **ProxyBlob v2.3 - 07/10/2026:**
 
 - Improved stream delivery, throughput and connection cleanup.

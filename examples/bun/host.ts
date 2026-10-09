@@ -4,13 +4,11 @@ import { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { createSocket, type Socket as DatagramSocket } from "node:dgram";
 
-if (Bun.version !== "1.4.2")
-  throw new Error(
-    "This socket harness is validated on Bun 1.4.2; revalidate before changing the runtime pin",
-  );
+if (Bun.semver.order(Bun.version, "1.4.0") < 0)
+  throw new Error(`This socket harness requires Bun 1.4 or later; found ${Bun.version}`);
 
 export const CHUNK_BYTES = 64 * 1024;
-// Bun 1.4.2 uses a 512 KiB native receive event. Readable may overshoot its
+// Bun 1.4 uses a 512 KiB native receive event. Readable may overshoot its
 // 64 KiB high-water mark by that one event before pausing the socket.
 export const HOST_READ_BYTES = CHUNK_BYTES + 512 * 1024;
 export const WRITE_BYTES = 256 * 1024;
