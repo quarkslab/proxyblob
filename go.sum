@@ -20,8 +20,8 @@ github.com/apache/arrow-go/v18 v18.7.0 h1:Vw/i+cJyebUofT7JlqFpe65LrmwxULn166jjwS
 github.com/apache/arrow-go/v18 v18.7.0/go.mod h1:PM6IigLJkdMwIpeHXnymo+xZ52f42a9EYiLtRel4p/A=
 github.com/apache/thrift v0.24.0 h1:zy31L1a49QTNB2bG1BBfMXol3yJrTH975G3pPubQVLQ=
 github.com/apache/thrift v0.24.0/go.mod h1:zPt6WxgvTOM6hF92y8C+MkEM5LMxZuk4JcQOiU4Esvs=
-github.com/atsika/aznet v0.0.0-20261008235412-95905abd0435 h1:1Z9WinWh+wjKR6P+cykE9Oh1HZM8IXQKkufvhvPCADM=
-github.com/atsika/aznet v0.0.0-20261008235412-95905abd0435/go.mod h1:LmC2jYFlrHSKpzO15C054lzMPJCpwM1CQN+ObC3a8C4=
+github.com/atsika/aznet v0.0.0-20261009074802-8da2e140ecba h1:WcJkbiq+OAA7QhvhzZcJo3nA4XB9sI3sVm9QgPhaOk0=
+github.com/atsika/aznet v0.0.0-20261009074802-8da2e140ecba/go.mod h1:LmC2jYFlrHSKpzO15C054lzMPJCpwM1CQN+ObC3a8C4=
 github.com/chzyer/logex v1.1.10 h1:Swpa1K6QvQznwJRcfTfQJmTE72DqScAa40E+fbHEXEE=
 github.com/chzyer/logex v1.1.10/go.mod h1:+Ywpsq7O8HXn0nuIou7OrIPyXbp3wmkHB+jjWRnGsAI=
 github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1 h1:q763qf9huN11kDQavWsoZXJNW3xEE4JJyHa5Q25/sd8=
