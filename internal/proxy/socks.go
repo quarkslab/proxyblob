@@ -107,6 +107,8 @@ func replyCode(code byte) byte {
 		return socks5.CommandNotSupported
 	case diag.ErrAddressNotSupported:
 		return socks5.AddressTypeNotSupported
+	case diag.ErrAuthFailed:
+		return socks5.ConnectionNotAllowed
 	}
 	return socks5.GeneralFailure
 }

@@ -43,6 +43,25 @@ The resulting binary contains the credential; keep it private.
 
 `new --duration` controls how long the string permits new connections (default: seven days). Listener configuration can set `"session_duration": "24h"`, the default authorization lifetime for a new session. `agent ls` shows the issued expiry. Changing these settings does not renew existing sessions; reconnect with fresh credentials when needed.
 
+## Agents behind a proxy
+
+A native agent reaches storage through the machine's HTTP proxy when there is one. It uses the standard `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` variables, and on Windows, when none of them is set, the system proxy settings, including a PAC file or automatic detection. The settings are read when the agent starts; restart it to pick up a change. A PAC file is still consulted for each new connection.
+
+Put credentials in the proxy URL, with special characters percent-encoded:
+
+```sh
+HTTPS_PROXY='http://CORP%5Calice:p%40ssw0rd@proxy.corp:3128' ./agent -c '<connection-string>'
+```
+
+The authentication scheme is chosen from what the proxy offers: Negotiate (Kerberos), then NTLM, then Basic. Without credentials in the URL:
+
+- **Windows** uses the logged-on user for Negotiate and for NTLM.
+- **Linux and macOS** use a Kerberos ticket from the file cache named by `KRB5CCNAME` (default `/tmp/krb5cc_<uid>`). The macOS default cache is not readable; run `kinit` with `KRB5CCNAME=FILE:/path`. With a password in the URL, the agent logs in using `krb5.conf` (`KRB5_CONFIG`), or finds the KDC through DNS when you write `user@REALM`.
+
+The connections the agent opens for SOCKS clients (CONNECT) follow the same settings, so a PAC file can send internal hosts `DIRECT` and everything else through the proxy. SOCKS does not say what protocol a connection carries, so a target on port 80 is looked up as `http://host` (and follows `HTTP_PROXY`), and a target on any other port as `https://host:port` (and follows `HTTPS_PROXY`). With only `HTTPS_PROXY` set, port 80 is reached directly. A target the proxy refuses or cannot reach is then tried directly, so hosts reachable without the proxy stay reachable. When both fail, the SOCKS reply names the proxy's answer: `connection not allowed` (2) when the proxy rejected the agent's credentials, `general failure` (1) when it refused or failed the tunnel. Most proxies only tunnel to port 443. BIND and UDP never use the proxy.
+
+Only HTTP and HTTPS proxies are supported, not SOCKS. WASM agents use the host runtime's networking and its own proxy settings.
+
 ## WASM agent with Bun
 
 Install Bun **1.4 or later**, which the included host requires. From the repository root:

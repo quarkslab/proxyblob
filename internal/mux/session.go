@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"sync"
@@ -46,7 +47,7 @@ func NewSession(ctx context.Context, conn net.Conn, cfg FlowConfig, opts ...Sess
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{BaseHandler: base, accepted: make(chan *ProtocolConn, cfg.MaxStreams)}
+	s := &Session{BaseHandler: base, accepted: make(chan *ProtocolConn, cfg.MaxStreams+peerHeadroom(cfg.MaxStreams))}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -85,6 +86,26 @@ func (s *Session) Reserve() (*Reservation, error) {
 		return nil, err
 	}
 	return &Reservation{s: s, c: c}, nil
+}
+
+// ReserveWait is Reserve, but when the session is full it waits for a stream to
+// close instead of refusing, until ctx ends. Only capacity is waited on; any
+// other failure is returned at once.
+func (s *Session) ReserveWait(ctx context.Context) (*Reservation, error) {
+	for {
+		freed := s.slotWait()
+		r, err := s.Reserve()
+		if !errors.Is(err, diag.ErrCapacity) {
+			return r, err
+		}
+		select {
+		case <-freed:
+		case <-ctx.Done():
+			return nil, err
+		case <-s.Ctx.Done():
+			return nil, s.Ctx.Err()
+		}
+	}
 }
 
 // AttachDestination ties dst to the reservation: closing the reservation or
@@ -178,7 +199,8 @@ func (s *Session) OnNew(id uuid.UUID, data []byte) byte {
 			s.SendClose(id, diag.ErrConnectionClosed)
 			return
 		}
-		// Registered streams never exceed MaxStreams, the channel's capacity.
+		// Registered streams never exceed MaxStreams plus peer headroom, the
+		// channel's capacity.
 		select {
 		case s.accepted <- pc:
 		case <-s.Ctx.Done():

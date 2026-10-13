@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"proxyblob/internal/diag"
 	"proxyblob/internal/mux"
+	"proxyblob/internal/socks5"
 	"sync"
 	"testing"
 	"time"
@@ -164,4 +166,13 @@ func TestLocalStopNotifiesPeerAfterNew(t *testing.T) {
 	readRecord(mux.CmdNew)
 	s.StopListening()
 	readRecord(mux.CmdClose)
+}
+
+func TestReplyCodeForProxyRefusal(t *testing.T) {
+	if got := replyCode(diag.ErrAuthFailed); got != socks5.ConnectionNotAllowed {
+		t.Fatalf("auth failure maps to %d", got)
+	}
+	if got := replyCode(diag.ErrGeneralSocksFailure); got != socks5.GeneralFailure {
+		t.Fatalf("proxy failure maps to %d", got)
+	}
 }

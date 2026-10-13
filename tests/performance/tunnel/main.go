@@ -110,11 +110,7 @@ func serve(args []string) error {
 	metrics := aznet.NewDefaultMetrics()
 	// Unique bootstrap names keep concurrent or leftover runs apart.
 	id := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-	transport, err := bootstrap.TransportOptions()
-	if err != nil {
-		return err
-	}
-	opts := append(transport, aznet.WithContext(ctx), aznet.WithMetrics(metrics), aznet.WithEndpoints("h"+id, "t"+id))
+	opts := append(bootstrap.TransportOptions(), aznet.WithContext(ctx), aznet.WithMetrics(metrics), aznet.WithEndpoints("h"+id, "t"+id))
 
 	started := time.Now()
 	ln, err := aznet.Listen(driver, address, opts...)
@@ -132,10 +128,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := mux.FlowConfigFromEnv()
-	if err != nil {
-		return err
-	}
+	cfg := mux.NewFlowConfig()
 
 	dialed := make(chan error, 1)
 	var agentConn net.Conn

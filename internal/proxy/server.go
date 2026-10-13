@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	"proxyblob/internal/mux"
 
@@ -117,23 +118,32 @@ func (s *ProxyServer) acceptLoop(listener net.Listener) {
 	}
 }
 
+// slotTimeout bounds how long a client waits for a free tunnel stream when the
+// session is full. Waiting queues a burst instead of resetting its overflow.
+const slotTimeout = 30 * time.Second
+
 // handleConnection reserves a tunnel stream before negotiating, so a client
-// beyond the session's capacity is refused before any SOCKS reply, then
-// negotiates SOCKS5 locally and serves the request.
+// beyond the session's capacity is held back (or refused after slotTimeout)
+// before any SOCKS reply, then negotiates SOCKS5 locally and serves the request.
 func (s *ProxyServer) handleConnection(listener net.Listener, client net.Conn) {
 	defer client.Close()
 	// Disable Nagle's algorithm for better TLS performance.
 	if tcp, ok := client.(*net.TCPConn); ok {
 		tcp.SetNoDelay(true)
 	}
+	ctx, cancel := context.WithTimeout(s.Ctx, slotTimeout)
+	reservation, err := s.ReserveWait(ctx)
+	cancel()
+	if err != nil {
+		if s.Ctx.Err() == nil {
+			log.Warn().Err(err).Str("client", client.RemoteAddr().String()).Msg("Client refused: no free tunnel stream")
+		}
+		return
+	}
 	s.lifecycleMu.Lock()
 	if s.listener != listener || s.Ctx.Err() != nil {
 		s.lifecycleMu.Unlock()
-		return
-	}
-	reservation, err := s.Reserve()
-	if err != nil {
-		s.lifecycleMu.Unlock()
+		reservation.Release()
 		return
 	}
 	// Closing the reservation (StopListening, Stop) also closes the client.

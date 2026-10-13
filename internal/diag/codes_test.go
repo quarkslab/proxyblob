@@ -95,3 +95,25 @@ func TestProxyDescriptionsCoverLocalAndWireCodes(t *testing.T) {
 		}
 	}
 }
+
+// A dial error wraps its cause in a *net.OpError; the cause, not the "dial"
+// operation, decides the SOCKS reply.
+func TestMapNetErrorNamesTheDialCause(t *testing.T) {
+	dial := func(cause error) error { return &net.OpError{Op: "dial", Net: "tcp", Err: cause} }
+	for _, tc := range []struct {
+		err  error
+		want byte
+	}{
+		{dial(&net.DNSError{Err: "no such host", IsNotFound: true}), ErrHostUnreachable},
+		{dial(os.NewSyscallError("connect", syscall.ECONNREFUSED)), ErrConnectionRefused},
+		{dial(os.NewSyscallError("connect", syscall.EHOSTUNREACH)), ErrHostUnreachable},
+		{dial(os.NewSyscallError("connect", syscall.ENETUNREACH)), ErrNetworkUnreachable},
+		{dial(errors.New("other")), ErrNetworkUnreachable},
+		{fmt.Errorf("relay: %w", ErrProxyDenied), ErrAuthFailed},
+		{ErrProxyFailed, ErrGeneralSocksFailure},
+	} {
+		if got := MapNetError(tc.err); got != tc.want {
+			t.Errorf("%v: code %d, want %d", tc.err, got, tc.want)
+		}
+	}
+}

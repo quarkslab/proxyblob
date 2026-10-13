@@ -10,12 +10,13 @@ Build from the repository root with `make`, rather than compiling an individual 
 - Run `listener start NAME` before generating a connection string with `new`.
 - Make sure both proxy and agent can reach the storage endpoint. A localhost URL only works if storage is reachable on the agent's own machine.
 - Try a fresh, complete connection string and matching proxy/agent builds.
+- If the machine reaches the internet through a proxy, see [Agents behind a proxy](usage.md#agents-behind-a-proxy). Check `HTTPS_PROXY`, `NO_PROXY` and the credentials in the proxy URL.
 
 The agent is normally quiet. Look for **Agent connected** on the proxy and check `agent ls`. If the agent exits, status `2` means missing credentials, `3` means connection/setup failure, and `4` means agent registration failed. Numeric messages printed by the agent are separate diagnostic codes; include them when reporting a problem.
 
 ## SOCKS requests fail
 
-Select an agent, run `agent start`, and use the port shown by **Proxy started**. Check that the agent can reach the destination. Use `curl --socks5-hostname` to resolve hostnames from the agent's network.
+Select an agent, run `agent start`, and use the port shown by **Proxy started**. Check that the agent can reach the destination. Use `curl --socks5-hostname` to resolve hostnames from the agent's network. `curl -v` prints the SOCKS reply code: `(6)` TTL expired after about 10 seconds means the agent's direct connection was silently dropped, typically on a network that only lets traffic out through a proxy the agent does not know about (set `HTTPS_PROXY`); `(4)` means the name did not resolve or the host is unreachable from the agent.
 
 For UDP, use a SOCKS5 UDP-capable client. BIND requires a native agent and a reachable incoming address; it does not configure firewall or NAT rules.
 

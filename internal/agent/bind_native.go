@@ -10,14 +10,19 @@ import (
 	"proxyblob/internal/relay"
 	"strconv"
 	"sync"
+	"time"
 
 	"proxyblob/internal/mux"
 )
 
 // BIND accepts only the requested peer IP(s) and port; unspecified IP and port
 // zero are explicit wildcards. DNS is resolved once so the policy cannot change
-// between replies. The setup timeout is configurable through WithBindTimeout.
+// between replies. Resolution, listener setup and the peer wait share bindTimeout.
 // The first reply carries the listening address, the second the accepted peer.
+// bindTimeout bounds BIND setup up to the accepted peer; it does not limit the
+// TCP conversation that follows.
+const bindTimeout = 2 * time.Minute
+
 func (a *Agent) bind(stream *mux.ProtocolConn, addr []byte) {
 	target, code := relay.ParseAddress(addr)
 	if code != diag.ErrNone {
@@ -26,7 +31,7 @@ func (a *Agent) bind(stream *mux.ProtocolConn, addr []byte) {
 	}
 	setup, cancel := socketSetupContext(a.Ctx, stream.Done())
 	defer cancel()
-	ctx, deadline := context.WithTimeout(setup, a.bindTimeout)
+	ctx, deadline := context.WithTimeout(setup, bindTimeout)
 	defer deadline()
 	go func() {
 		select {

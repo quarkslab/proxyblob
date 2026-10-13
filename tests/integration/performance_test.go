@@ -87,10 +87,7 @@ func TestStorageFixedTransfer(t *testing.T) {
 
 	defer a.Close()
 	defer b.Close()
-	cfg, err := mux.FlowConfigFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := mux.NewFlowConfig()
 	s, err := proxy.NewProxyServerWithConfig(context.Background(), a, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -166,10 +163,7 @@ func TestStorageLatencyTransfer(t *testing.T) {
 	if err != nil || ms < 0 || ms > 250 {
 		t.Fatal("latency must be 0..250 ms")
 	}
-	cfg, err := mux.FlowConfigFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := mux.NewFlowConfig()
 	rawA, rawB := net.Pipe()
 	a, b := &latencyConn{Conn: rawA, delay: time.Duration(ms) * time.Millisecond}, &latencyConn{Conn: rawB, delay: time.Duration(ms) * time.Millisecond}
 	begin := time.Now()

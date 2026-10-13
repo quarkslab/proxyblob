@@ -5,7 +5,8 @@
 - Faster bulk transfers: about 3.5× on Blob and Table and 1.8× on Queue, with about 75% fewer storage requests per MiB on Blob.
 - New connections take two tunnel round trips instead of three; malformed or unsupported SOCKS requests are answered by the proxy without tunnel traffic.
 - Lower latency on an idle tunnel for most storage backends.
-- Tuning: added `PROXYBLOB_MAX_STREAM_WINDOW`, `PROXYBLOB_WRITE_BUFFER` and `PROXYBLOB_WRITE_CHUNKS`; removed `PROXYBLOB_BATCH_BYTES`.
+- Agents can reach storage through an HTTP proxy: `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`, and on Windows the system settings including PAC. Basic, NTLM and Kerberos proxy authentication are supported, with single sign-on on Windows. Relayed TCP connections (SOCKS CONNECT) use the same proxy, falling back to a direct connection when the proxy refuses the target. See [Agents behind a proxy](docs/usage.md#agents-behind-a-proxy).
+- Failed SOCKS CONNECTs report their cause: DNS failures as host unreachable, refusals as connection refused, instead of network unreachable for every dial error.
 - Reorganized the code by role under `internal/` (operator, proxy, agent, relay, mux, SOCKS5 codec): SOCKS5 is now handled entirely by the proxy, and the agent only relays connections.
 - v2.4 proxies and agents cannot connect to v2.3 ones: update both, and the Bun example files for WASM agents, at the same time. See the [upgrade notes](docs/usage.md#upgrading).
 
