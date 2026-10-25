@@ -6,10 +6,13 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"proxyblob/internal/diag"
+
+	"github.com/google/uuid"
 )
 
 func sessionPair(t *testing.T, cfg FlowConfig, opts ...SessionOption) (*Session, *Session) {
@@ -119,6 +122,71 @@ func TestSessionStreamDatagrams(t *testing.T) {
 		got, err := receive.Receive()
 		if err != nil || !bytes.Equal(got, message) {
 			t.Fatalf("datagram of %d bytes: got %d, %v", size, len(got), err)
+		}
+	}
+}
+
+func TestSessionReserveWaitQueuesUntilSlotFrees(t *testing.T) {
+	cfg := DefaultFlowConfig()
+	cfg.MaxStreams = 1
+	cfg.ControlSlots = 4
+	opener, _ := sessionPair(t, cfg, WithAccept())
+	first, err := opener.Reserve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A bounded wait on a full session ends with the capacity error.
+	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := opener.ReserveWait(short); !errors.Is(err, diag.ErrCapacity) {
+		t.Fatalf("full session: %v", err)
+	}
+	// A waiter is admitted as soon as the slot is released.
+	got := make(chan error, 1)
+	go func() {
+		r, err := opener.ReserveWait(context.Background())
+		if err == nil {
+			r.Release()
+		}
+		got <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	first.Release()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("waiter: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter was not admitted after release")
+	}
+}
+
+func TestLatePacketForClosedStreamGetsNoReply(t *testing.T) {
+	opener, acceptor := sessionPair(t, DefaultFlowConfig(), WithAccept())
+	var mu sync.Mutex
+	var codes []byte
+	acceptor.OnError = func(_ uuid.UUID, code byte) { mu.Lock(); codes = append(codes, code); mu.Unlock() }
+	local, remote := openAccepted(t, opener, acceptor)
+	id := local.ID()
+	local.Close()
+	remote.Close()
+	// The acceptor sends DATA and EOF for a stream the opener has already closed.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := opener.Connections.Load(id); !ok {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	acceptor.sendPacket(CmdData, id, []byte("late"))
+	acceptor.sendPacket(CmdEOF, id, nil)
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, c := range codes {
+		if c == diag.ErrConnectionNotFound {
+			t.Fatalf("peer was told %d for a late packet", c)
 		}
 	}
 }

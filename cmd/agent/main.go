@@ -54,12 +54,8 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 	if err != nil {
 		return nil, ErrConnectionStringError
 	}
-	transport, err := bootstrap.TransportOptions()
-	if err != nil {
-		reportError(diag.ErrorCode(err))
-		return nil, ErrConnectionStringError
-	}
-	opts = append(append(opts, transport...), aznet.WithContext(ctx))
+	opts = append(append(opts, bootstrap.TransportOptions()...), aznet.WithContext(ctx))
+	opts = append(opts, bootstrap.ProxyOptions()...)
 	conn, err := aznet.Dial(driver, address, opts...)
 	if err != nil {
 		reportError(diag.ErrorCode(err))
@@ -73,12 +69,7 @@ func NewAgent(ctx context.Context, connString string) (*Agent, int) {
 		return nil, ErrIdentityExchange
 	}
 
-	cfg, err := mux.FlowConfigFromEnv()
-	if err != nil {
-		reportError(diag.ErrorCode(err))
-		conn.Close()
-		return nil, ErrConnectionStringError
-	}
+	cfg := mux.NewFlowConfig()
 	handler, err := tunnel.NewWithConfig(ctx, conn, cfg)
 	if err != nil {
 		conn.Close()

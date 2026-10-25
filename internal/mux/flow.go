@@ -4,9 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net"
-	"os"
 	"proxyblob/internal/diag"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,10 +29,11 @@ type FlowConfig struct {
 
 func DefaultFlowConfig() FlowConfig {
 	return FlowConfig{
-		// TunnelWindow admits MaxStreams at StreamWindow plus 32 MiB of growth.
-		StreamWindow: 512 << 10, MaxStreamWindow: 4 << 20, TunnelWindow: 96 << 20, MaxStreams: 128,
+		// TunnelWindow admits MaxStreams at StreamWindow plus 32 MiB of growth. It
+		// is an accounting bound: receive rings are allocated only as data arrives.
+		StreamWindow: 512 << 10, MaxStreamWindow: 4 << 20, TunnelWindow: 1024*(512<<10) + 32<<20, MaxStreams: 1024,
 		UDPQueueBytes: DatagramQueueBytes, UDPQueuePackets: DatagramQueuePackets, UDPDestinations: 64,
-		DataFrame: 32 << 10, ControlSlots: 512, DrainTimeout: DrainTimeout,
+		DataFrame: 32 << 10, ControlSlots: 4096, DrainTimeout: DrainTimeout,
 	}
 }
 
@@ -81,12 +80,27 @@ func peerWindow(b []byte) (uint64, error) {
 // RegisterConnection reserves actual storage before advertising any credit.
 // Stream IDs must be fresh for the tunnel lifetime (the proxy uses random UUIDs).
 func (h *BaseHandler) RegisterConnection(c *Connection) error {
+	return h.register(c, false)
+}
+
+// peerHeadroom lets a session accept more peer-opened streams than it opens
+// itself. The opener frees a slot the moment it closes a stream, but the peer
+// frees its own only once its relay has drained, so without headroom a full
+// opener would have streams refused by a peer that has not caught up yet.
+func peerHeadroom(limit int) int { return limit / 4 }
+
+func (h *BaseHandler) register(c *Connection, fromPeer bool) error {
 	h.flowMu.Lock()
 	defer h.flowMu.Unlock()
 	if h.Ctx.Err() != nil {
 		return h.Ctx.Err()
 	}
-	if h.streams >= h.flow.MaxStreams || h.reserved > h.flow.TunnelWindow-h.flow.StreamWindow {
+	maxStreams, tunnelWindow := h.flow.MaxStreams, h.flow.TunnelWindow
+	if fromPeer {
+		maxStreams += peerHeadroom(maxStreams)
+		tunnelWindow += peerHeadroom(tunnelWindow)
+	}
+	if h.streams >= maxStreams || h.reserved > tunnelWindow-h.flow.StreamWindow {
 		return diag.ErrCapacity
 	}
 	if _, exists := h.Connections.Load(c.ID); exists {
@@ -108,11 +122,35 @@ func (h *BaseHandler) RegisterConnection(c *Connection) error {
 	return nil
 }
 
+// Streams is the number of stream slots in use.
+func (h *BaseHandler) Streams() int {
+	h.flowMu.Lock()
+	defer h.flowMu.Unlock()
+	return h.streams
+}
+
+// HalfClosed is the number of forwarded streams with one direction ended.
+func (h *BaseHandler) HalfClosed() int { return int(h.halfClosed.Load()) }
+
 func (h *BaseHandler) releaseReservation(window int) {
 	h.flowMu.Lock()
 	h.streams--
 	h.reserved -= window
+	if h.slotFreed != nil {
+		close(h.slotFreed)
+		h.slotFreed = nil
+	}
 	h.flowMu.Unlock()
+}
+
+// slotWait returns a channel closed the next time a stream slot is released.
+func (h *BaseHandler) slotWait() <-chan struct{} {
+	h.flowMu.Lock()
+	defer h.flowMu.Unlock()
+	if h.slotFreed == nil {
+		h.slotFreed = make(chan struct{})
+	}
+	return h.slotFreed
 }
 
 // growReservation claims delta more of the tunnel budget for a growing window.
@@ -203,35 +241,7 @@ func (h *BaseHandler) receiveCredit(id uuid.UUID, data []byte) byte {
 	return diag.ErrNone
 }
 
-// FlowConfigFromEnv is shared by native and WASM commands. Byte/count values
-// are decimal integers; the drain duration uses Go duration syntax.
-func FlowConfigFromEnv() (FlowConfig, error) {
-	c := DefaultFlowConfig()
-	for name, target := range map[string]*int{
-		"PROXYBLOB_STREAM_WINDOW":     &c.StreamWindow,
-		"PROXYBLOB_MAX_STREAM_WINDOW": &c.MaxStreamWindow,
-		"PROXYBLOB_TUNNEL_WINDOW":     &c.TunnelWindow,
-		"PROXYBLOB_MAX_STREAMS":       &c.MaxStreams,
-		"PROXYBLOB_DATA_FRAME":        &c.DataFrame,
-		"PROXYBLOB_CONTROL_SLOTS":     &c.ControlSlots,
-		"PROXYBLOB_UDP_QUEUE_BYTES":   &c.UDPQueueBytes,
-		"PROXYBLOB_UDP_QUEUE_PACKETS": &c.UDPQueuePackets,
-		"PROXYBLOB_UDP_DESTINATIONS":  &c.UDPDestinations,
-	} {
-		if value, ok := os.LookupEnv(name); ok {
-			n, err := strconv.Atoi(value)
-			if err != nil {
-				return c, diag.ErrInvalidFlowConfig
-			}
-			*target = n
-		}
-	}
-	if value, ok := os.LookupEnv("PROXYBLOB_DRAIN_TIMEOUT"); ok {
-		duration, err := time.ParseDuration(value)
-		if err != nil {
-			return c, diag.ErrInvalidFlowConfig
-		}
-		c.DrainTimeout = duration
-	}
-	return c, c.validate()
+// NewFlowConfig returns the default flow configuration, validated.
+func NewFlowConfig() FlowConfig {
+	return DefaultFlowConfig()
 }

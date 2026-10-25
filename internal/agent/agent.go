@@ -7,7 +7,6 @@ package agent
 import (
 	"context"
 	"net"
-	"time"
 
 	"proxyblob/internal/diag"
 	"proxyblob/internal/mux"
@@ -19,27 +18,11 @@ import (
 type Agent struct {
 	*mux.Session
 	udpDestinations int
-	bindTimeout     time.Duration
-}
-
-// Option configures agent setup limits.
-type Option func(*Agent) error
-
-// WithBindTimeout bounds native BIND resolution, listener setup and peer wait.
-// The default is two minutes; it does not limit the accepted TCP conversation.
-func WithBindTimeout(d time.Duration) Option {
-	return func(a *Agent) error {
-		if d <= 0 {
-			return diag.ErrInvalidBindTimeout
-		}
-		a.bindTimeout = d
-		return nil
-	}
 }
 
 // New creates an agent with the default flow configuration.
-func New(ctx context.Context, conn net.Conn, options ...Option) *Agent {
-	a, err := NewWithConfig(ctx, conn, mux.DefaultFlowConfig(), options...)
+func New(ctx context.Context, conn net.Conn) *Agent {
+	a, err := NewWithConfig(ctx, conn, mux.DefaultFlowConfig())
 	if err != nil {
 		panic(err)
 	}
@@ -47,19 +30,12 @@ func New(ctx context.Context, conn net.Conn, options ...Option) *Agent {
 }
 
 // NewWithConfig creates an agent over conn.
-func NewWithConfig(ctx context.Context, conn net.Conn, cfg mux.FlowConfig, options ...Option) (*Agent, error) {
+func NewWithConfig(ctx context.Context, conn net.Conn, cfg mux.FlowConfig) (*Agent, error) {
 	session, err := mux.NewSession(ctx, conn, cfg, mux.WithAccept())
 	if err != nil {
 		return nil, err
 	}
-	a := &Agent{Session: session, udpDestinations: cfg.UDPDestinations, bindTimeout: 2 * time.Minute}
-	for _, option := range options {
-		if err := option(a); err != nil {
-			session.Abort()
-			return nil, err
-		}
-	}
-	return a, nil
+	return &Agent{Session: session, udpDestinations: cfg.UDPDestinations}, nil
 }
 
 // Start begins serving the proxy's streams.

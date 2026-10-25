@@ -17,8 +17,17 @@ func (a *Agent) connect(stream *mux.ProtocolConn, addr []byte) {
 		a.fail(stream, code)
 		return
 	}
-	// Bun bridge on WASM, native net elsewhere.
 	setupCtx, cancelSetup := socketSetupContext(a.Ctx, stream.Done())
+	// A client that has gone away (EOF before the reply) must not keep the dial,
+	// and its stream slot, alive until the dial times out.
+	go func() {
+		select {
+		case <-stream.ReceiveDone():
+			cancelSetup()
+		case <-setupCtx.Done():
+		}
+	}()
+	// Through the machine's egress proxy when it has one; the JS host on WASM.
 	targetConn, err := netenv.DialTCPContext(setupCtx, target)
 	cancelSetup()
 	if err != nil {

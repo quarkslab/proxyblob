@@ -12,18 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestInvalidFlowEnvironmentDoesNotExposeInput(t *testing.T) {
-	for _, name := range []string{"PROXYBLOB_STREAM_WINDOW", "PROXYBLOB_DRAIN_TIMEOUT"} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv(name, "private-query?sig=secret")
-			_, err := FlowConfigFromEnv()
-			if !errors.Is(err, diag.ErrInvalidFlowConfig) || err.Error() != "47" {
-				t.Fatalf("unsanitized config failure: %v", err)
-			}
-		})
-	}
-}
-
 type failedReadConn struct {
 	net.Conn
 	failure error

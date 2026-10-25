@@ -18,7 +18,12 @@ import (
 // serveSOCKS negotiates SOCKS5 with client and serves its request. It owns the
 // reservation: every path either opens it or releases it.
 func (s *ProxyServer) serveSOCKS(client net.Conn, r *mux.Reservation) {
+	leave := enter(&s.negotiating)
+	// A client that connects and stays silent must not keep its stream slot.
+	client.SetReadDeadline(time.Now().Add(greetingTimeout))
 	cmd, addr, ok := negotiate(client)
+	client.SetReadDeadline(time.Time{})
+	leave()
 	if !ok {
 		r.Release()
 		return
@@ -30,6 +35,9 @@ func (s *ProxyServer) serveSOCKS(client net.Conn, r *mux.Reservation) {
 		s.serveUDP(client, r, addr)
 	}
 }
+
+// greetingTimeout bounds the SOCKS greeting and request.
+const greetingTimeout = 10 * time.Second
 
 // negotiate runs the NoAuth greeting and reads one request (RFC 1928). It
 // replies to a malformed or unsupported request itself; ok reports a request
@@ -107,6 +115,8 @@ func replyCode(code byte) byte {
 		return socks5.CommandNotSupported
 	case diag.ErrAddressNotSupported:
 		return socks5.AddressTypeNotSupported
+	case diag.ErrAuthFailed:
+		return socks5.ConnectionNotAllowed
 	}
 	return socks5.GeneralFailure
 }
@@ -119,10 +129,14 @@ func (s *ProxyServer) serveTCP(client net.Conn, r *mux.Reservation, cmd byte, ad
 		r.Release()
 		return
 	}
+	leave := enter(&s.opening)
 	stream, err := r.Open(s.Ctx)
+	leave()
 	if err != nil {
 		return
 	}
+	leave = enter(&s.awaitingReply)
+	defer func() { leave() }() // whichever phase the stream ends in
 	if relay.WriteRequest(stream, cmd, addr) != nil {
 		stream.CloseWithCode(diag.ErrConnectionClosed)
 		return
@@ -147,6 +161,8 @@ func (s *ProxyServer) serveTCP(client net.Conn, r *mux.Reservation, cmd byte, ad
 			return
 		}
 	}
+	leave()
+	leave = enter(&s.forwarding)
 	err = mux.Forward(stream, stopWatch())
 	if err != nil {
 		s.ReportError(stream.ID(), diag.StreamErrorCode(err))

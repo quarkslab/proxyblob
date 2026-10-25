@@ -59,9 +59,34 @@ func MapNetError(err error) byte {
 		return ErrNone
 	}
 
+	// The egress proxy answered for the target: it refused us, or it failed.
+	if errors.Is(err, ErrProxyDenied) {
+		return ErrAuthFailed
+	}
+	if errors.Is(err, ErrProxyFailed) {
+		return ErrGeneralSocksFailure
+	}
+
 	// Check for timeout
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		return ErrTTLExpired
+	}
+
+	// A dial error wraps its cause; name it before the generic dial outcome.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return ErrHostUnreachable
+	}
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return ErrConnectionRefused
+	case errors.Is(err, syscall.EHOSTUNREACH):
+		return ErrHostUnreachable
+	case errors.Is(err, syscall.ENETUNREACH):
+		return ErrNetworkUnreachable
+	}
+	if code := platformDialCode(err); code != ErrNone {
+		return code
 	}
 
 	// Check for net.OpError (most common network error type)
@@ -114,7 +139,7 @@ const (
 	ErrCapacity           Error = 45
 	ErrDatagramDropped    Error = 46
 	ErrInvalidFlowConfig  Error = 47
-	ErrInvalidBindTimeout Error = 48
+	// 48 was the BIND timeout option's validation error; it is not reused.
 	ErrJSHostProtocol     Error = 49
 	ErrJSHostUnsupported  Error = 50
 	ErrReceivePanic       Error = 51
@@ -125,6 +150,9 @@ const (
 	ErrNoBindPeers        Error = 56
 	ErrNoDNSAddresses     Error = 57
 	ErrNoBindInterface    Error = 58
+	ErrProxyDenied        Error = 63 // the egress proxy refused to tunnel to the target
+	ErrProxyFailed        Error = 64 // the egress proxy could not tunnel to the target
+	ErrHalfClosedIdle     Error = 65 // a half-closed stream went idle and was closed
 )
 
 // ErrorCode never formats an underlying error (which may contain credentials).
@@ -188,6 +216,9 @@ func StreamErrorCode(err error) byte {
 	}
 	if errors.Is(err, syscall.EPIPE) {
 		return ErrStreamBrokenPipe
+	}
+	if code := platformStreamCode(err); code != ErrNone {
+		return code
 	}
 	var timeout net.Error
 	if errors.As(err, &timeout) && timeout.Timeout() {

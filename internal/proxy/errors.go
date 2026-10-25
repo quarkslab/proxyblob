@@ -13,7 +13,8 @@ func protocolErrorReporter(logger zerolog.Logger) func(uuid.UUID, byte) {
 			return
 		}
 		event := logger.Warn()
-		if diag.IsStreamClosure(code) {
+		// A packet that crossed its stream's close in flight; older agents report it.
+		if diag.IsStreamClosure(code) || code == diag.ErrConnectionNotFound {
 			event = logger.Debug()
 		}
 		event.Uint8("code", code).Str("conn_id", id.String()).Msg(diag.Description(code))

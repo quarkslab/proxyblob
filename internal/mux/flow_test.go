@@ -496,15 +496,9 @@ func TestFlowConfiguration(t *testing.T) {
 			t.Fatal("invalid limit accepted")
 		}
 	}
-	t.Setenv("PROXYBLOB_STREAM_WINDOW", "32768")
-	t.Setenv("PROXYBLOB_DRAIN_TIMEOUT", "2s")
-	cfg, err := FlowConfigFromEnv()
-	if err != nil || cfg.StreamWindow != 32768 || cfg.DrainTimeout.String() != "2s" {
-		t.Fatalf("configuration: %+v %v", cfg, err)
-	}
-	t.Setenv("PROXYBLOB_DATA_FRAME", "invalid")
-	if _, err := FlowConfigFromEnv(); err == nil {
-		t.Fatal("invalid environment ignored")
+	cfg := NewFlowConfig()
+	if cfg.validate() != nil {
+		t.Fatalf("default config invalid: %+v", cfg)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"proxyblob/internal/diag"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,12 +58,14 @@ type BaseHandler struct {
 	flow                   FlowConfig
 	flowMu                 sync.Mutex
 	reserved, streams      int
+	slotFreed              chan struct{} // closed on the next slot release; guarded by flowMu
 	drainOnce              sync.Once
 	draining               chan struct{}
 	writerDone             chan struct{}
 	abortDone              chan struct{}
 	writeErrMu             sync.Mutex
 	writeErr               error
+	halfClosed             atomic.Int64 // streams in Forward with one direction ended
 
 	// Connections maps UUIDs to active Connection objects
 	Connections sync.Map
@@ -476,6 +479,12 @@ func (h *BaseHandler) badHandshake(err error) byte {
 }
 
 func (h *BaseHandler) rejectStream(id uuid.UUID, code byte) {
+	// A packet for an unknown stream is the tail of one already closed: the
+	// closer has sent its CLOSE and ids are never reused, so replying only costs
+	// a control record on the tunnel and a spurious diagnostic on the peer.
+	if code == diag.ErrConnectionNotFound {
+		return
+	}
 	if v, ok := h.Connections.Load(id); ok {
 		v.(*Connection).Close()
 		h.Connections.CompareAndDelete(id, v)
@@ -491,7 +500,7 @@ func (h *BaseHandler) AcceptConnection(id uuid.UUID, data []byte) (*Connection, 
 		return nil, err
 	}
 	c := NewConnection(id, h.Ctx.Done())
-	if err := h.RegisterConnection(c); err != nil {
+	if err := h.register(c, true); err != nil {
 		return nil, err
 	}
 	if err := c.setPeerWindow(window); err != nil {

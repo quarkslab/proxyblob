@@ -9,6 +9,7 @@ import (
 	"proxyblob/internal/diag"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -399,9 +400,19 @@ func (h *BaseHandler) Drain(ctx context.Context) error {
 	}
 }
 
+// HalfClosedIdle bounds how long a stream stays open once one direction has
+// ended while nothing flows in the other. A target that never closes after
+// its client did, or a proxy that does not pass a half-close on, would
+// otherwise hold the stream, and its slot, until the session ends.
+const HalfClosedIdle = 60 * time.Second
+
 // Forward copies both directions, propagating each clean EOF with CloseWrite.
 // A failure aborts both endpoints and wakes the other copy before returning.
-func Forward(a, b net.Conn) error {
+// Once one direction has ended, the stream is closed after HalfClosedIdle
+// without traffic in the other.
+func Forward(a, b net.Conn) error { return forward(a, b, HalfClosedIdle) }
+
+func forward(a, b net.Conn, idle time.Duration) error {
 	results := make(chan error, 2)
 	var abort sync.Once
 	closeBoth := func() {
@@ -415,12 +426,16 @@ func Forward(a, b net.Conn) error {
 			}
 		})
 	}
+	var last atomic.Int64 // UnixNano of the latest traffic either way
+	last.Store(time.Now().UnixNano())
+	halfClosed := make(chan struct{})
+	var halfOnce sync.Once
 	copyDirection := func(dst, src net.Conn) {
 		var err error
 		if pc, ok := dst.(*ProtocolConn); ok {
-			_, err = pc.copyFrom(src)
+			_, err = pc.copyFrom(activityConn{Conn: src, last: &last})
 		} else {
-			_, err = io.Copy(dst, src)
+			_, err = io.Copy(activityWriter{w: dst, last: &last}, src)
 		}
 		if err == nil {
 			if cw, ok := dst.(interface{ CloseWrite() error }); ok {
@@ -431,13 +446,51 @@ func Forward(a, b net.Conn) error {
 		}
 		if err != nil {
 			closeBoth()
+		} else {
+			halfOnce.Do(func() {
+				last.Store(time.Now().UnixNano())
+				close(halfClosed)
+			})
 		}
 		results <- err
 	}
+	done := make(chan struct{})
+	var idledOut atomic.Bool
+	go func() {
+		select {
+		case <-halfClosed:
+		case <-done:
+			return
+		}
+		if h := sessionOf(a, b); h != nil {
+			h.halfClosed.Add(1)
+			defer h.halfClosed.Add(-1)
+		}
+		timer := time.NewTimer(idle)
+		defer timer.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-timer.C:
+				quiet := time.Since(time.Unix(0, last.Load()))
+				if quiet >= idle {
+					idledOut.Store(true)
+					closeBoth()
+					return
+				}
+				timer.Reset(idle - quiet)
+			}
+		}
+	}()
 	go copyDirection(a, b)
 	go copyDirection(b, a)
 	err1, err2 := <-results, <-results
+	close(done)
 	err := errors.Join(err1, err2)
+	if err != nil && idledOut.Load() {
+		err = errors.Join(diag.ErrHalfClosedIdle, err)
+	}
 	if err != nil {
 		// Both copies have finished: a shutdown error must not mask a concurrent
 		// failure from the other direction in the peer's close diagnosis.
@@ -448,4 +501,42 @@ func Forward(a, b net.Conn) error {
 		}
 	}
 	return err
+}
+
+// sessionOf is the handler of whichever endpoint is a tunnel stream.
+func sessionOf(a, b net.Conn) *BaseHandler {
+	for _, conn := range []net.Conn{a, b} {
+		if pc, ok := conn.(*ProtocolConn); ok {
+			return pc.handler
+		}
+	}
+	return nil
+}
+
+// activityConn records when a socket last delivered bytes.
+type activityConn struct {
+	net.Conn
+	last *atomic.Int64
+}
+
+func (c activityConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.last.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
+// activityWriter records when bytes last reached a socket.
+type activityWriter struct {
+	w    io.Writer
+	last *atomic.Int64
+}
+
+func (w activityWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	if n > 0 {
+		w.last.Store(time.Now().UnixNano())
+	}
+	return n, err
 }

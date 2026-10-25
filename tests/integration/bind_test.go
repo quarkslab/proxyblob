@@ -2,11 +2,9 @@ package integration_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"io"
 	"net"
-	tunnel "proxyblob/internal/agent"
 	proxy "proxyblob/internal/proxy"
 	"proxyblob/internal/socks5"
 	"testing"
@@ -242,31 +240,6 @@ func TestMalformedSOCKSRequestsReturnFailureAndEOF(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestBindTimeoutSendsSecondFailureAndReleasesListener(t *testing.T) {
-	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
-	agent := tunnel.New(context.Background(), b, tunnel.WithBindTimeout(100*time.Millisecond))
-	defer agent.Stop()
-	agent.Start()
-	s := proxy.NewProxyServer(context.Background(), a)
-	defer s.Stop()
-	s.Start("127.0.0.1:0")
-	c := socksClient(t, s, []byte{5, 1, 0})
-	socksCommand(t, c, 2, []byte{1, 127, 0, 0, 1, 0, 0})
-	bound := socksReply(t, c, 0)
-	socksReply(t, c, socks5.TTLExpired)
-	var buf [1]byte
-	if _, err := c.Read(buf[:]); err != io.EOF {
-		t.Fatalf("timeout EOF %v", err)
-	}
-	listener, err := net.Listen("tcp", bound.String())
-	if err != nil {
-		t.Fatalf("timeout leaked listener: %v", err)
-	}
-	listener.Close()
 }
 
 func TestPartialSOCKSRequestClosesWithoutListener(t *testing.T) {

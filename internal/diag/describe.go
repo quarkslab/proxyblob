@@ -44,7 +44,6 @@ var descriptions = map[byte]string{
 	byte(ErrCapacity):           "tunnel stream reservation exhausted",
 	byte(ErrDatagramDropped):    "datagram dropped at finite queue limit",
 	byte(ErrInvalidFlowConfig):  "invalid finite flow limits",
-	byte(ErrInvalidBindTimeout): "BIND timeout must be positive",
 	byte(ErrJSHostProtocol):     "JS socket host contract violation",
 	byte(ErrJSHostUnsupported):  "JS socket host version 2 required",
 	byte(ErrReceivePanic):       "protocol receive loop panic",
@@ -56,6 +55,9 @@ var descriptions = map[byte]string{
 	byte(ErrNoBindPeers):     "no BIND peer addresses",
 	byte(ErrNoDNSAddresses):  "no DNS addresses",
 	byte(ErrNoBindInterface): "no usable interface for wildcard BIND",
+	byte(ErrProxyDenied):     "egress proxy refused the target",
+	byte(ErrProxyFailed):     "egress proxy could not reach the target",
+	byte(ErrHalfClosedIdle):  "half-closed stream idle, closed",
 
 	// Protocol packet errors
 	ErrInvalidPacket: "invalid protocol packet structure",
