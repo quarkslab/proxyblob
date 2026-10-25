@@ -122,6 +122,16 @@ func (h *BaseHandler) register(c *Connection, fromPeer bool) error {
 	return nil
 }
 
+// Streams is the number of stream slots in use.
+func (h *BaseHandler) Streams() int {
+	h.flowMu.Lock()
+	defer h.flowMu.Unlock()
+	return h.streams
+}
+
+// HalfClosed is the number of forwarded streams with one direction ended.
+func (h *BaseHandler) HalfClosed() int { return int(h.halfClosed.Load()) }
+
 func (h *BaseHandler) releaseReservation(window int) {
 	h.flowMu.Lock()
 	h.streams--

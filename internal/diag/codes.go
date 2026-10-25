@@ -152,6 +152,7 @@ const (
 	ErrNoBindInterface    Error = 58
 	ErrProxyDenied        Error = 63 // the egress proxy refused to tunnel to the target
 	ErrProxyFailed        Error = 64 // the egress proxy could not tunnel to the target
+	ErrHalfClosedIdle     Error = 65 // a half-closed stream went idle and was closed
 )
 
 // ErrorCode never formats an underlying error (which may contain credentials).

@@ -1,12 +1,19 @@
 # Changelog
 
+**ProxyBlob v2.5 (aware) - 25/10/2026:**
+
+- Agents can reach storage through an HTTP proxy: `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`, and on Windows the system settings including PAC. Basic, NTLM and Kerberos proxy authentication are supported, with single sign-on on Windows. Relayed TCP connections (SOCKS CONNECT) use it too: a proxy a PAC file names for the target first, while targets that would only get the default proxy are tried directly first; either way within 10 seconds per connection. See [Agents behind a proxy](docs/usage.md#agents-behind-a-proxy).
+- A stream whose client or target has finished sending is closed after 60 seconds without traffic the other way, and a SOCKS client that sends nothing is dropped after 10 seconds, so neither keeps a tunnel stream. A client refused for want of a free stream is logged with what the session's streams are doing.
+- A SOCKS client beyond the session's stream capacity waits up to 30 seconds for a free tunnel stream instead of being refused at once.
+- Failed SOCKS CONNECTs report their cause: DNS failures as host unreachable, refusals as connection refused, instead of network unreachable for every dial error.
+- Removed the `PROXYBLOB_MAX_STREAM_WINDOW`, `PROXYBLOB_WRITE_BUFFER`, `PROXYBLOB_WRITE_CHUNKS` and `PROXYBLOB_DATA_FRAME` tuning variables.
+
 **ProxyBlob v2.4 - 09/10/2026:**
 
 - Faster bulk transfers: about 3.5× on Blob and Table and 1.8× on Queue, with about 75% fewer storage requests per MiB on Blob.
 - New connections take two tunnel round trips instead of three; malformed or unsupported SOCKS requests are answered by the proxy without tunnel traffic.
 - Lower latency on an idle tunnel for most storage backends.
-- Agents can reach storage through an HTTP proxy: `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`, and on Windows the system settings including PAC. Basic, NTLM and Kerberos proxy authentication are supported, with single sign-on on Windows. Relayed TCP connections (SOCKS CONNECT) use the same proxy, falling back to a direct connection when the proxy refuses the target. See [Agents behind a proxy](docs/usage.md#agents-behind-a-proxy).
-- Failed SOCKS CONNECTs report their cause: DNS failures as host unreachable, refusals as connection refused, instead of network unreachable for every dial error.
+- Tuning: added `PROXYBLOB_MAX_STREAM_WINDOW`, `PROXYBLOB_WRITE_BUFFER` and `PROXYBLOB_WRITE_CHUNKS`; removed `PROXYBLOB_BATCH_BYTES`.
 - Reorganized the code by role under `internal/` (operator, proxy, agent, relay, mux, SOCKS5 codec): SOCKS5 is now handled entirely by the proxy, and the agent only relays connections.
 - v2.4 proxies and agents cannot connect to v2.3 ones: update both, and the Bun example files for WASM agents, at the same time. See the [upgrade notes](docs/usage.md#upgrading).
 

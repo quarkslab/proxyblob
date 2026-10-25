@@ -8,6 +8,7 @@ import (
 	"os"
 	"proxyblob/internal/diag"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,6 +65,7 @@ type BaseHandler struct {
 	abortDone              chan struct{}
 	writeErrMu             sync.Mutex
 	writeErr               error
+	halfClosed             atomic.Int64 // streams in Forward with one direction ended
 
 	// Connections maps UUIDs to active Connection objects
 	Connections sync.Map

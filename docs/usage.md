@@ -58,7 +58,13 @@ The authentication scheme is chosen from what the proxy offers: Negotiate (Kerbe
 - **Windows** uses the logged-on user for Negotiate and for NTLM.
 - **Linux and macOS** use a Kerberos ticket from the file cache named by `KRB5CCNAME` (default `/tmp/krb5cc_<uid>`). The macOS default cache is not readable; run `kinit` with `KRB5CCNAME=FILE:/path`. With a password in the URL, the agent logs in using `krb5.conf` (`KRB5_CONFIG`), or finds the KDC through DNS when you write `user@REALM`.
 
-The connections the agent opens for SOCKS clients (CONNECT) follow the same settings, so a PAC file can send internal hosts `DIRECT` and everything else through the proxy. SOCKS does not say what protocol a connection carries, so a target on port 80 is looked up as `http://host` (and follows `HTTP_PROXY`), and a target on any other port as `https://host:port` (and follows `HTTPS_PROXY`). With only `HTTPS_PROXY` set, port 80 is reached directly. A target the proxy refuses or cannot reach is then tried directly, so hosts reachable without the proxy stay reachable. When both fail, the SOCKS reply names the proxy's answer: `connection not allowed` (2) when the proxy rejected the agent's credentials, `general failure` (1) when it refused or failed the tunnel. Most proxies only tunnel to port 443. BIND and UDP never use the proxy.
+The connections the agent opens for SOCKS clients (CONNECT) follow the same settings. SOCKS does not say what protocol a connection carries, so a target on port 80 is looked up as `http://host` (and follows `HTTP_PROXY`), and a target on any other port as `https://host:port` (and follows `HTTPS_PROXY`). What the agent then does depends on the answer:
+
+- No proxy for the target (no settings, `NO_PROXY` or the Windows bypass list, or a PAC file answering `DIRECT`): a direct connection.
+- A proxy a PAC file names for this target in particular: that proxy, then a direct connection if it refuses or fails.
+- A proxy that is only the default (`HTTPS_PROXY`, a static Windows proxy, or the proxy a PAC file gives every host it does not single out): a direct connection first, for up to 5 seconds, then the proxy, unless the target refused the connection. Internal hosts are reached without bothering the proxy, and hosts only reachable through it still are, after that delay.
+
+When a PAC file lists several proxies, the next one is tried only if one cannot be reached. Each CONNECT gets 10 seconds in all, so a dead host frees its stream as quickly as it did without a proxy. When everything fails, the SOCKS reply names the most useful answer: `connection not allowed` (2) when the proxy rejected the agent's credentials, `general failure` (1) when it refused or failed the tunnel, and otherwise the direct connection's error. Most proxies only tunnel to port 443. BIND and UDP never use the proxy.
 
 Only HTTP and HTTPS proxies are supported, not SOCKS. WASM agents use the host runtime's networking and its own proxy settings.
 

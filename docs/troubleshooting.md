@@ -18,6 +18,8 @@ The agent is normally quiet. Look for **Agent connected** on the proxy and check
 
 Select an agent, run `agent start`, and use the port shown by **Proxy started**. Check that the agent can reach the destination. Use `curl --socks5-hostname` to resolve hostnames from the agent's network. `curl -v` prints the SOCKS reply code: `(6)` TTL expired after about 10 seconds means the agent's direct connection was silently dropped, typically on a network that only lets traffic out through a proxy the agent does not know about (set `HTTPS_PROXY`); `(4)` means the name did not resolve or the host is unreachable from the agent.
 
+**Client refused: no free tunnel stream** (error 45) means every stream of the session was in use for 30 seconds. The log line counts them by phase: `negotiating` (SOCKS greeting), `opening` (waiting for the agent to accept the stream), `awaiting_reply` (the agent is connecting to the target), `forwarding`, and among those `half_closed`. Mostly `awaiting_reply` means targets that do not answer: lower the scanner's thread count or its timeout. With proxychains, set `tcp_read_time_out` above 10000 so it waits for the agent's answer instead of leaving the stream behind.
+
 For UDP, use a SOCKS5 UDP-capable client. BIND requires a native agent and a reachable incoming address; it does not configure firewall or NAT rules.
 
 ## Transfers are slow

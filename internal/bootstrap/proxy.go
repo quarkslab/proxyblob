@@ -24,50 +24,76 @@ func ProxyOptions() []aznet.Option {
 	return []aznet.Option{aznet.WithProxyFunc(resolveProxy)}
 }
 
-// proxyResolver applies the standard HTTPS_PROXY, HTTP_PROXY and NO_PROXY
-// variables when any proxy is set there, and the operating system's settings
-// (including PAC and WPAD) otherwise. Credentials ride in the proxy URL, as
+// route is how the proxy settings say to reach a destination.
+type route struct {
+	// proxies are tried in order; none means a direct connection.
+	proxies []*url.URL
+	// byDefault marks proxies the settings give every destination they do not
+	// single out (a static proxy, or a PAC file's catch-all rule) rather than an
+	// answer about this one, so a direct connection is worth trying first.
+	byDefault bool
+}
+
+// routeFor applies the standard HTTPS_PROXY, HTTP_PROXY and NO_PROXY variables
+// when any proxy is set there, and the operating system's settings (including
+// PAC and WPAD) otherwise. Credentials ride in the proxy URL, as
 // http://user:pass@host:port, and the scheme is chosen from the proxy's
-// challenge. A nil result connects directly.
+// challenge.
+func routeFor(target *url.URL) (route, error) {
+	if env := httpproxy.FromEnvironment(); env.HTTPProxy != "" || env.HTTPSProxy != "" {
+		proxy, err := env.ProxyFunc()(target)
+		if err != nil || proxy == nil {
+			return route{}, err
+		}
+		return route{proxies: []*url.URL{proxy}, byDefault: true}, nil
+	}
+	return systemRoute(target)
+}
+
+// resolveProxy is the storage tunnel's choice: the first proxy of the route.
+// A nil result connects directly.
 func resolveProxy(_ context.Context, target *url.URL) (*aznet.ProxyConfig, error) {
-	proxy, err := proxyFor(target)
-	if err != nil || proxy == nil {
+	r, err := routeFor(target)
+	if err != nil || len(r.proxies) == 0 {
 		return nil, err
 	}
-	return &aznet.ProxyConfig{URL: proxy, Auth: aznet.ProxyAuto}, nil
+	return proxyConfig(r.proxies[0]), nil
 }
 
-func proxyFor(target *url.URL) (*url.URL, error) {
-	if env := httpproxy.FromEnvironment(); env.HTTPProxy != "" || env.HTTPSProxy != "" {
-		return env.ProxyFunc()(target)
-	}
-	return systemProxy(target)
+func proxyConfig(proxy *url.URL) *aznet.ProxyConfig {
+	return &aznet.ProxyConfig{URL: proxy, Auth: aznet.ProxyAuto}
 }
 
-// directTimeout bounds a direct dial to a relay target, as before targets
-// could go through the proxy.
-const directTimeout = 10 * time.Second
+const (
+	// setupTimeout bounds everything DialTarget tries for one target, so a dead
+	// host releases its tunnel stream as soon as a direct dial would.
+	setupTimeout = 10 * time.Second
+	// directFirstTimeout is the share of setupTimeout a direct attempt gets
+	// before the proxies, when they are only the settings' default.
+	directFirstTimeout = 5 * time.Second
+)
 
-var directDialer = &net.Dialer{Timeout: directTimeout}
+var directDialer net.Dialer // bounded by the caller's context
 
-// DialTarget connects the agent to a target it relays to: through the
-// machine's egress proxy when the settings name one for the target, as the
-// tunnel itself does, and directly otherwise. A target the proxy refuses or
-// cannot reach is then tried directly, so hosts that were reachable before
-// (an internal network the proxy does not serve) still are.
+// DialTarget connects the agent to a target it relays to, within setupTimeout:
+//   - directly when the settings name no proxy for it;
+//   - through the proxies they name for this target specifically (a PAC rule),
+//     then directly if those refuse or fail;
+//   - directly first when the proxies are only the default, then through them
+//     unless the target answered (a refused port needs no proxy), so internal
+//     hosts are reached without the proxy and hosts behind it still are.
 func DialTarget(ctx context.Context, target string) (net.Conn, error) {
-	pc, err := resolveProxy(ctx, relayURL(target))
-	if err != nil || pc == nil {
+	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
+	defer cancel()
+	r, err := routeFor(relayURL(target))
+	if err != nil || len(r.proxies) == 0 {
 		// Unreadable settings must not cut the agent off what it reached before.
 		return dialDirect(ctx, target)
 	}
-	proxied := aznet.NewProxyDialer(func(context.Context, *url.URL) (*aznet.ProxyConfig, error) { return pc, nil }, nil)
-	return withDirectFallback(
-		func(ctx context.Context, target string) (net.Conn, error) {
-			return proxied.DialContext(ctx, "tcp", target)
-		},
-		dialDirect,
-	)(ctx, target)
+	if r.byDefault {
+		return directFirst(dialDirect, viaProxies(r.proxies))(ctx, target)
+	}
+	return proxiesFirst(viaProxies(r.proxies), dialDirect)(ctx, target)
 }
 
 func dialDirect(ctx context.Context, target string) (net.Conn, error) {
@@ -88,9 +114,27 @@ func relayURL(target string) *url.URL {
 
 type dialFunc = func(ctx context.Context, target string) (net.Conn, error)
 
-// withDirectFallback dials through proxied, then directly when the proxy
-// itself refused or failed.
-func withDirectFallback(proxied, direct dialFunc) dialFunc {
+// viaProxies tunnels through each proxy in turn, moving on only when one
+// cannot be reached: a proxy that answered and refused speaks for the others.
+func viaProxies(proxies []*url.URL) dialFunc {
+	return func(ctx context.Context, target string) (net.Conn, error) {
+		var err error
+		for _, proxy := range proxies {
+			pc := proxyConfig(proxy)
+			d := aznet.NewProxyDialer(func(context.Context, *url.URL) (*aznet.ProxyConfig, error) { return pc, nil }, nil)
+			var conn net.Conn
+			conn, err = d.DialContext(ctx, "tcp", target)
+			if err == nil || !errors.Is(err, aznet.ErrProxyUnreachable) || ctx.Err() != nil {
+				return conn, err
+			}
+		}
+		return nil, err
+	}
+}
+
+// proxiesFirst dials through proxied, then directly when the proxy itself
+// refused or failed.
+func proxiesFirst(proxied, direct dialFunc) dialFunc {
 	return func(ctx context.Context, target string) (net.Conn, error) {
 		conn, err := proxied(ctx, target)
 		if err == nil {
@@ -105,14 +149,40 @@ func withDirectFallback(proxied, direct dialFunc) dialFunc {
 		if err == nil {
 			return conn, nil
 		}
-		// A direct dial that times out says only that egress is filtered; the
-		// proxy's answer is the better explanation then.
-		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
-			return nil, perr
+		return nil, explain(err, perr)
+	}
+}
+
+// directFirst dials directly for up to directFirstTimeout, then through
+// proxied unless the target itself answered.
+func directFirst(direct, proxied dialFunc) dialFunc {
+	return func(ctx context.Context, target string) (net.Conn, error) {
+		dctx, cancel := context.WithTimeout(ctx, directFirstTimeout)
+		conn, err := direct(dctx, target)
+		cancel()
+		if err == nil || ctx.Err() != nil || diag.MapNetError(err) == diag.ErrConnectionRefused {
+			return conn, err
+		}
+		conn, perr := proxied(ctx, target)
+		if perr == nil {
+			return conn, nil
+		}
+		if p := proxyError(perr); p != nil && ctx.Err() == nil {
+			return nil, explain(err, p)
 		}
 		return nil, err
 	}
+}
+
+// explain picks the better reason a target is out of reach: a direct dial
+// that timed out says only that egress is filtered, so the proxy's answer
+// explains more then.
+func explain(direct, proxy error) error {
+	var ne net.Error
+	if errors.As(direct, &ne) && ne.Timeout() {
+		return proxy
+	}
+	return direct
 }
 
 // proxyError reduces a failure answered by the egress proxy to a numeric

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"proxyblob/internal/mux"
@@ -23,6 +24,15 @@ type ProxyServer struct {
 	listener    net.Listener
 	lifecycleMu sync.Mutex
 	stopOnce    sync.Once
+
+	// What the session's streams are doing, for the log when it is full.
+	negotiating, opening, awaitingReply, forwarding atomic.Int64
+}
+
+// enter counts a stream into a phase until the returned func is called.
+func enter(phase *atomic.Int64) (leave func()) {
+	phase.Add(1)
+	return func() { phase.Add(-1) }
 }
 
 // NewProxyServer creates a proxy server with the default flow configuration.
@@ -136,7 +146,14 @@ func (s *ProxyServer) handleConnection(listener net.Listener, client net.Conn) {
 	cancel()
 	if err != nil {
 		if s.Ctx.Err() == nil {
-			log.Warn().Err(err).Str("client", client.RemoteAddr().String()).Msg("Client refused: no free tunnel stream")
+			log.Warn().Err(err).Str("client", client.RemoteAddr().String()).
+				Int("active", s.Streams()).
+				Int64("negotiating", s.negotiating.Load()).
+				Int64("opening", s.opening.Load()).
+				Int64("awaiting_reply", s.awaitingReply.Load()).
+				Int64("forwarding", s.forwarding.Load()).
+				Int("half_closed", s.HalfClosed()).
+				Msg("Client refused: no free tunnel stream")
 		}
 		return
 	}

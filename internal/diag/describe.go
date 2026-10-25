@@ -57,6 +57,7 @@ var descriptions = map[byte]string{
 	byte(ErrNoBindInterface): "no usable interface for wildcard BIND",
 	byte(ErrProxyDenied):     "egress proxy refused the target",
 	byte(ErrProxyFailed):     "egress proxy could not reach the target",
+	byte(ErrHalfClosedIdle):  "half-closed stream idle, closed",
 
 	// Protocol packet errors
 	ErrInvalidPacket: "invalid protocol packet structure",
