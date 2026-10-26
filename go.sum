@@ -26,8 +26,8 @@ github.com/apache/arrow-go/v18 v18.8.0 h1:BLOzbPv7bxMPgXPacAg6HQjnxupYsZzC4tf+Fk
 github.com/apache/arrow-go/v18 v18.8.0/go.mod h1:uJCFfCwq0KsxCmsCfQg4ft+LsW+iHYzAXiSDh5ug/8U=
 github.com/apache/thrift v0.24.0 h1:zy31L1a49QTNB2bG1BBfMXol3yJrTH975G3pPubQVLQ=
 github.com/apache/thrift v0.24.0/go.mod h1:zPt6WxgvTOM6hF92y8C+MkEM5LMxZuk4JcQOiU4Esvs=
-github.com/atsika/aznet v0.0.0-20261014000434-40434982941c h1:6IGuY6FHx08gRUevxEsFcl0xkj0GvU6MG3h73RbdV/o=
-github.com/atsika/aznet v0.0.0-20261014000434-40434982941c/go.mod h1:uIpmpeR2IdBfzHKYBGSNbD1AaJZOJtfDPUsUgwjBpAI=
+github.com/atsika/aznet v0.0.0-20261026085345-a979521447c9 h1:9/o92yFkszm4ShAqX2quPRVHOZjazqBwtEpTAjQRm58=
+github.com/atsika/aznet v0.0.0-20261026085345-a979521447c9/go.mod h1:uIpmpeR2IdBfzHKYBGSNbD1AaJZOJtfDPUsUgwjBpAI=
 github.com/chzyer/logex v1.1.10 h1:Swpa1K6QvQznwJRcfTfQJmTE72DqScAa40E+fbHEXEE=
 github.com/chzyer/logex v1.1.10/go.mod h1:+Ywpsq7O8HXn0nuIou7OrIPyXbp3wmkHB+jjWRnGsAI=
 github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1 h1:q763qf9huN11kDQavWsoZXJNW3xEE4JJyHa5Q25/sd8=

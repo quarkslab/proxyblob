@@ -50,7 +50,7 @@ require (
 )
 
 require (
-	github.com/atsika/aznet v0.0.0-20261014000434-40434982941c
+	github.com/atsika/aznet v0.0.0-20261026085345-a979521447c9
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jedib0t/go-pretty v4.3.0+incompatible
 	github.com/mattn/go-ieproxy v0.0.12
